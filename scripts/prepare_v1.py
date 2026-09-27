@@ -1,0 +1,156 @@
+"""v1 data: PianoCoRe (classical piano) + PiJAMA (jazz piano), tokenized in parallel into a memory map.
+
+Writes <out>/vocab.json, <out>/tokens.bin (uint16) and <out>/index.json (one entry per performance).
+Styles: composers with >= --min-hours of tier-B piano get their own STYLE token (others share
+classical_other); jazz pianists with >= --jazz-min-hours get jazz_<name> (others share jazz_piano).
+
+Run:  .venv/bin/python scripts/prepare_v1.py --pianocore data/raw/pianocore_hf --pijama data/raw/pijama
+Reuse a vocabulary (e.g. the one made on the full data): --vocab path/to/vocab.json
+"""
+
+import argparse
+import json
+import os
+import sys
+import zlib
+from collections import Counter
+from multiprocessing import Pool
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import symusic  # noqa: E402
+
+from orchestramaker.datasets import (pianocore_row_groups, pianocore_rows, pijama_files, pijama_pianist,  # noqa: E402
+                                     score_notes, slugify)
+from orchestramaker.tokenizer import Tokenizer  # noqa: E402
+
+TOKENIZER: Tokenizer | None = None
+STYLE_OF: dict[str, str] = {}
+
+
+def composer_styles(hours: Counter, min_hours: float) -> dict[str, str]:
+    """Composer name -> style; surname only unless two kept composers share it (bach_johann_sebastian)."""
+    kept = [c for c, h in hours.items() if h >= min_hours]
+    surname = {c: slugify(c.split(",")[0]) for c in kept}
+    clashes = Counter(surname.values())
+    styles = {c: surname[c] if clashes[surname[c]] == 1 else slugify(c) for c in kept}
+    return {c: styles.get(c, "classical_other") for c in hours}
+
+
+def metadata(args):
+    hours = Counter()
+    groups = list(pianocore_row_groups(args.pianocore))
+    for path, group in groups:
+        for row in pianocore_rows(path, group, ["composer", "performance_duration"]):
+            hours[row["composer"]] += row["performance_duration"] / 3600
+    styles = composer_styles(hours, args.min_hours)
+
+    files = pijama_files(args.pijama)
+    jazz_hours = Counter()
+    for f in files:
+        jazz_hours[pijama_pianist(f)] += symusic.Score(str(f), ttype="second").end() / 3600
+    for pianist, h in jazz_hours.items():
+        styles[f"pijama:{pianist}"] = f"jazz_{slugify(pianist)}" if h >= args.jazz_min_hours else "jazz_piano"
+    print(f"PianoCoRe tier B: {sum(hours.values()):,.0f} h, {len(hours)} composers in {len(groups)} row groups; "
+          f"PiJAMA: {sum(jazz_hours.values()):,.0f} h, {len(jazz_hours)} pianists")
+    return styles, groups, files
+
+
+def init_worker(tokenizer, style_of):
+    global TOKENIZER, STYLE_OF
+    TOKENIZER, STYLE_OF = tokenizer, style_of
+
+
+def encode(notes, style):
+    if style not in TOKENIZER.styles:
+        style = "jazz_piano" if style.startswith("jazz_") else "classical_other"
+    return np.array(TOKENIZER.encode(notes, style, "piano"), dtype=np.uint16), style
+
+
+def tokenize_row_group(task):
+    path, group = task
+    out = []
+    cols = ["composer", "composition", "movement", "split", "performance_midi_bytes"]
+    for row in pianocore_rows(path, group, cols):
+        try:
+            notes = score_notes(symusic.Score.from_midi(row["performance_midi_bytes"], ttype="second"))
+        except Exception:
+            continue  # a handful of files don't parse
+        if len(notes) < 32:
+            continue
+        ids, style = encode(notes, STYLE_OF[row["composer"]])
+        title = f"{row['composer'].replace('_', ' ')} - {row['composition']}" + \
+            (f" - {row['movement']}" if row["movement"] else "")
+        split = "train" if row["split"] == "train" else "validation"
+        out.append(("pianocore", style, split, title, ids))
+    return out
+
+
+def tokenize_pijama(path):
+    notes = score_notes(symusic.Score(str(path), ttype="second"))
+    if len(notes) < 32:
+        return []
+    ids, style = encode(notes, STYLE_OF[f"pijama:{pijama_pianist(path)}"])
+    split = "validation" if zlib.crc32(str(path.relative_to(path.parents[3])).encode()) % 20 == 0 else "train"
+    return [("pijama", style, split, f"{pijama_pianist(path)} - {path.stem}", ids)]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pianocore", type=Path, default=ROOT / "data/raw/pianocore_hf")
+    ap.add_argument("--pijama", type=Path, default=ROOT / "data/raw/pijama")
+    ap.add_argument("--out", type=Path, default=ROOT / "data/tokens_v1")
+    ap.add_argument("--vocab", type=Path)
+    ap.add_argument("--min-hours", type=float, default=20)
+    ap.add_argument("--jazz-min-hours", type=float, default=3)
+    ap.add_argument("--workers", type=int, default=len(os.sched_getaffinity(0)))
+    args = ap.parse_args()
+
+    style_of, groups, files = metadata(args)
+    if args.vocab:
+        tokenizer = Tokenizer.load(args.vocab)
+    else:
+        tokenizer = Tokenizer(sorted(set(style_of.values()) | {"classical_other", "jazz_piano"}), ["piano"])
+    args.out.mkdir(parents=True, exist_ok=True)
+    tokenizer.save(args.out / "vocab.json")
+    print(f"{len(tokenizer.styles)} styles, vocab {len(tokenizer)}; tokenizing with {args.workers} workers")
+
+    index = {k: [] for k in ("source", "style", "split", "title", "offset", "length")}
+    offset, done = 0, 0
+    with open(args.out / "tokens.bin", "wb") as f, \
+            Pool(args.workers, initializer=init_worker, initargs=(tokenizer, style_of)) as pool:
+        jobs = [(tokenize_row_group, g) for g in groups] + [(tokenize_pijama, p) for p in files]
+        for results in pool.imap_unordered(run_job, jobs, chunksize=1):
+            for source, style, split, title, ids in results:
+                f.write(ids.tobytes())
+                for key, value in zip(index, (source, style, split, title, offset, len(ids))):
+                    index[key].append(value)
+                offset += len(ids)
+            done += 1
+            if done % 50 == 0 or done == len(jobs):
+                print(f"  {done}/{len(jobs)} jobs, {offset / 1e9:.2f}B tokens", flush=True)
+    index["instrument"] = "piano"
+    (args.out / "index.json").write_text(json.dumps(index))
+
+    stats = Counter()
+    for source, style, split, n in zip(index["source"], index["style"], index["split"], index["length"]):
+        stats[(source, split)] += n
+    for (source, split), n in sorted(stats.items()):
+        print(f"{source:10s} {split:10s} {n / 1e6:9.1f}M tokens")
+    by_style = Counter()
+    for style, n in zip(index["style"], index["length"]):
+        by_style[style] += n
+    print("styles:", ", ".join(f"{s} {n / 1e6:.0f}M" for s, n in by_style.most_common()))
+
+
+def run_job(job):
+    fn, arg = job
+    return fn(arg)
+
+
+if __name__ == "__main__":
+    main()

@@ -8,6 +8,7 @@ Resume: ... --resume   (continues from <out_dir>/last.pt)
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,11 +19,9 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from orchestramaker.batches import BatchSampler
+from orchestramaker.batches import BatchSampler, load_pieces
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.tokenizer import Tokenizer
-
-TOKENS = ROOT / "data/tokens"
 
 
 def load_config(path, overrides):
@@ -78,8 +77,9 @@ def main():
     out = ROOT / cfg["out_dir"]
     out.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = Tokenizer.load(TOKENS / "vocab.json")
-    pieces = torch.load(TOKENS / "pieces.pt", weights_only=False)["pieces"]
+    data = ROOT / cfg.get("data", "data/tokens")
+    tokenizer = Tokenizer.load(data / "vocab.json")
+    pieces = load_pieces(data)
     common = dict(tokenizer=tokenizer, source_weights=cfg["source_weights"], block_size=cfg["model"]["block_size"])
     train = BatchSampler(pieces, split="train", max_transpose=cfg["max_transpose"], seed=cfg["seed"], **common)
     val = BatchSampler(pieces, split="validation", **common)
@@ -103,10 +103,14 @@ def main():
           f" ({torch.cuda.get_device_name(0) if device == 'cuda' else 'cpu'})")
     (out / "config.json").write_text(json.dumps(cfg, indent=1))
 
-    def save(name, val_losses):
-        torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "model_config": model_cfg.to_dict(),
-                    "vocab": {"styles": tokenizer.styles, "instruments": tokenizer.instruments},
-                    "config": cfg, "step": step, "best_val": best, "val": val_losses}, out / name)
+    def save(name, val_losses, with_optimizer):
+        ckpt = {"model": model.state_dict(), "model_config": model_cfg.to_dict(),
+                "vocab": {"styles": tokenizer.styles, "instruments": tokenizer.instruments},
+                "config": cfg, "step": step, "best_val": best, "val": val_losses}
+        if with_optimizer:
+            ckpt["optimizer"] = opt.state_dict()
+        torch.save(ckpt, out / f"{name}.tmp")
+        os.replace(out / f"{name}.tmp", out / name)  # atomic: watchers never read a half-written file
 
     tokens_per_step = cfg["batch_size"] * cfg["model"]["block_size"]
     t0, log_t0 = time.time(), time.time()
@@ -135,8 +139,8 @@ def main():
             print(f"  val {'  '.join(f'{k} {v:.3f}' for k, v in losses.items())}  (mean {mean:.3f})", flush=True)
             if mean < best:
                 best = mean
-                save("best.pt", losses)
-            save("last.pt", losses)
+                save("best.pt", losses, with_optimizer=False)  # small: for listening / downloading
+            save("last.pt", losses, with_optimizer=True)   # for --resume
             log_t0 = time.time()
     print(f"done in {(time.time() - t0) / 60:.1f} min, best mean val loss {best:.3f}")
 

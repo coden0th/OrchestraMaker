@@ -31,14 +31,17 @@ class Block(nn.Module):
                                  nn.Linear(4 * c.n_embd, c.n_embd), nn.Dropout(c.dropout))
         self.drop = nn.Dropout(c.dropout)
 
-    def forward(self, x):
+    def forward(self, x, past=None):
+        """past: this layer's cached (keys, values) when decoding one token at a time."""
         B, T, C = x.shape
         q, k, v = (t.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
                    for t in self.qkv(self.ln1(x)).split(C, dim=2))
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True,
+        if past is not None:
+            k, v = torch.cat([past[0], k], dim=2), torch.cat([past[1], v], dim=2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=past is None,
                                            dropout_p=self.dropout if self.training else 0.0)
         x = x + self.drop(self.proj(y.transpose(1, 2).reshape(B, T, C)))
-        return x + self.mlp(self.ln2(x))
+        return x + self.mlp(self.ln2(x)), (k, v)
 
 
 class GPT(nn.Module):
@@ -65,24 +68,38 @@ class GPT(nn.Module):
         return sum(p.numel() for p in self.parameters()) - self.pos_emb.weight.numel()
 
     def forward(self, idx, targets=None, ignore_index=0):
-        x = self.drop(self.tok_emb(idx) + self.pos_emb(torch.arange(idx.shape[1], device=idx.device)))
-        for block in self.blocks:
-            x = block(x)
-        logits = self.head(self.ln_f(x))
+        logits, _ = self._run(idx)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.flatten(0, 1).float(), targets.flatten(), ignore_index=ignore_index)
         return logits, loss
 
+    def _run(self, idx, past=None):
+        offset = past[0][0].shape[2] if past else 0
+        x = self.drop(self.tok_emb(idx) + self.pos_emb(torch.arange(offset, offset + idx.shape[1], device=idx.device)))
+        cache = []
+        for i, block in enumerate(self.blocks):
+            x, kv = block(x, past[i] if past else None)
+            cache.append(kv)
+        return self.head(self.ln_f(x)), cache
+
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_p=0.95, eos=None):
+        """Sample with a KV cache. idx starts with BOS STYLE INST; when the context is full, restart the
+        cache from STYLE INST + the most recent tokens (like the mid-piece windows seen in training)."""
+        block = self.config.block_size
+        prefix = idx[:, 1:3]
+        pending, past = idx[:, -block:], None
         for _ in range(max_new_tokens):
-            logits, _ = self(idx[:, -self.config.block_size:])
+            if past is not None and past[0][0].shape[2] + pending.shape[1] > block:
+                pending, past = torch.cat([prefix, idx[:, -(block * 3 // 4):]], dim=1), None
+            logits, past = self._run(pending, past)
             probs = F.softmax(logits[:, -1].float() / temperature, dim=-1)
             sorted_p, order = probs.sort(descending=True)
             sorted_p[sorted_p.cumsum(-1) - sorted_p > top_p] = 0  # nucleus sampling
             nxt = order.gather(-1, torch.multinomial(sorted_p, 1))
             idx = torch.cat([idx, nxt], dim=1)
+            pending = nxt
             if eos is not None and (nxt == eos).all():
                 break
         return idx

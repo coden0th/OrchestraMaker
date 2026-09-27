@@ -129,7 +129,8 @@ TRUMPET = Instrument("trumpet", 56, low=52, high=84, max_polyphony=1, max_phrase
 TROMBONE = Instrument("trombone", 57, low=40, high=77, max_polyphony=1, max_phrase_sec=12)
 CLARINET = Instrument("clarinet", 71, low=50, high=94, max_polyphony=1, max_phrase_sec=12)
 VIBRAPHONE = Instrument("vibraphone", 11, low=53, high=89, max_polyphony=4)
-PIANO = Instrument("piano", 0, low=21, high=108, max_polyphony=10)
+# With the sustain pedal any number of keys can ring at once; ten fingers only limit simultaneous presses.
+PIANO = Instrument("piano", 0, low=21, high=108, max_polyphony=88)
 
 INSTRUMENTS = {i.name: i for i in (GUITAR, BASS, UPRIGHT_BASS, SOPRANO_SAX, ALTO_SAX, TENOR_SAX,
                                    BARITONE_SAX, TRUMPET, TROMBONE, CLARINET, VIBRAPHONE, PIANO)}

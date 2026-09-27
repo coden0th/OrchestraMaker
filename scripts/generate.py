@@ -18,12 +18,16 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from orchestramaker.batches import load_pieces
 from orchestramaker.instruments import INSTRUMENTS
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import Tokenizer
 
-PAIRINGS = [("mozart", "piano"), ("bach", "piano"), ("chopin", "piano"),
+# --all plays the pairings the checkpoint's vocabulary knows.
+PAIRINGS = [("mozart", "piano"), ("bach", "piano"), ("chopin", "piano"), ("beethoven", "piano"),
+            ("debussy", "piano"), ("liszt", "piano"), ("jazz_art_tatum", "piano"), ("jazz_brad_mehldau", "piano"),
+            ("jazz_keith_jarrett", "piano"), ("jazz_oscar_peterson", "piano"), ("jazz_piano", "piano"),
             ("jazz_bebop", "alto_sax"), ("jazz_hardbop", "tenor_sax"), ("jazz_cool", "trumpet"),
             ("jazz_swing", "acoustic_bass"), ("jazz_postbop", "jazz_guitar")]
 
@@ -34,13 +38,13 @@ def load(checkpoint, device):
     model.load_state_dict(ckpt["model"])
     print(f"loaded {checkpoint.name}: step {ckpt['step']}, val {ckpt['val']}")
     info = {"checkpoint": str(checkpoint.relative_to(ROOT)), "step": ckpt["step"],
-            "val_loss": {k: round(v, 3) for k, v in ckpt["val"].items()}}
+            "val_loss": {k: round(v, 3) for k, v in ckpt["val"].items()},
+            "data": ckpt["config"].get("data", "data/tokens")}
     return model, Tokenizer(**ckpt["vocab"]), info
 
 
-def prime_tokens(tokenizer, style, instrument, seconds):
-    pieces = torch.load(ROOT / "data/tokens/pieces.pt", weights_only=False)["pieces"]
-    piece = next(p for p in pieces if p["split"] == "validation" and p["style"] == style
+def prime_tokens(tokenizer, data, style, instrument, seconds):
+    piece = next(p for p in load_pieces(ROOT / data) if p["split"] == "validation" and p["style"] == style
                  and p["instrument"] == instrument)
     _, _, notes = tokenizer.decode(piece["tokens"])
     print(f"  priming with {seconds}s of: {piece['title']}")
@@ -51,7 +55,7 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     meta = {"style": style, "instrument": instrument, **info,
             "temperature": args.temperature, "top_p": args.top_p, "seed": args.seed}
     if args.prime:
-        ids, meta["prime_title"] = prime_tokens(tokenizer, style, instrument, args.prime)
+        ids, meta["prime_title"] = prime_tokens(tokenizer, info["data"], style, instrument, args.prime)
         meta["prime_seconds"] = args.prime
     else:
         ids = [tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]
@@ -89,7 +93,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, info = load(ROOT / args.checkpoint, device)
     out_dir = ROOT / args.out
-    for style, instrument in PAIRINGS if args.all else [(args.style, args.instrument)]:
+    known = [(s, i) for s, i in PAIRINGS if s in tokenizer.styles and i in tokenizer.instruments]
+    for style, instrument in known if args.all else [(args.style, args.instrument)]:
         play(model, tokenizer, info, style, instrument, args, device, out_dir)
     print(f"WAV files in {out_dir}")
 

@@ -102,6 +102,41 @@ def load_maestro() -> list[Piece]:
     return pieces
 
 
+def slugify(text: str) -> str:
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return "_".join("".join(c if c.isalnum() else " " for c in ascii_text).split())
+
+
+def score_notes(score: symusic.Score) -> list[Note]:
+    """All notes of a (piano) MIDI score in seconds, with the sustain pedal applied per track."""
+    return [n for track in score.tracks for n in apply_sustain_pedal(track)]
+
+
+def pianocore_row_groups(root: Path):
+    """(parquet file, row group) pairs of PianoCoRe (CC BY-NC-SA 4.0), for parallel reading."""
+    import pyarrow.parquet as pq
+    for path in sorted(root.rglob("*.parquet")):
+        for group in range(pq.ParquetFile(path).num_row_groups):
+            yield path, group
+
+
+def pianocore_rows(path: Path, group: int, columns: list[str]):
+    """Tier B rows (deduplicated, quality-filtered) of one row group."""
+    import pyarrow.parquet as pq
+    for row in pq.ParquetFile(path).read_row_group(group, columns=["tier_b", *columns]).to_pylist():
+        if row["tier_b"]:
+            yield row
+
+
+def pijama_files(root: Path) -> list[Path]:
+    """PiJAMA (CC BY-NC 4.0) Kong transcriptions: midi_kong/<studio|live>/<pianist>/<album>/<title>.midi"""
+    return sorted(root.rglob("*.midi"))
+
+
+def pijama_pianist(path: Path) -> str:
+    return path.parent.parent.name
+
+
 def apply_sustain_pedal(track) -> list[Note]:
     """Hold notes released under the sustain pedal until the pedal lifts (or the key is struck again)."""
     n = track.notes.numpy()

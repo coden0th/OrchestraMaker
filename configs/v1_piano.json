@@ -1,0 +1,18 @@
+{
+  "data": "data/tokens_v1",
+  "model": {"block_size": 2048, "n_layer": 12, "n_head": 12, "n_embd": 768, "dropout": 0.05},
+  "source_weights": {"pianocore": 0.85, "pijama": 0.15},
+  "max_transpose": 3,
+  "batch_size": 32,
+  "max_steps": 16000,
+  "lr": 6e-4,
+  "min_lr": 6e-5,
+  "warmup_steps": 1000,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "eval_every": 500,
+  "eval_batches": 20,
+  "compile": true,
+  "out_dir": "checkpoints/v1_piano",
+  "seed": 0
+}
