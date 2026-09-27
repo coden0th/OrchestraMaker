@@ -81,15 +81,35 @@ takes can be switched between *as generated* and *made playable*.
 
 ## Roadmap
 
-- [x] **0. Setup** — venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
-- [x] **1. Instruments** — define guitar, bass guitar, alto/tenor sax, piano; render a scale
-      and a short phrase on each to verify the engine.
-- [x] **2. Data** — build the corpus from openly licensed sources (see below), tokenize, split.
-- [ ] **3. Train** — small transformer, style + instrument conditioning.
-- [ ] **4. Play** — generate, apply instrument constraints, render, listen.
-- [ ] **5. Evaluate** — playability violations, pitch/rhythm statistics vs. real data, blind listening.
-- [ ] **6. Stretch** — expressive performance (vibrato, bends, ghost notes), DDSP timbre,
-      audio → notes transcription so the model can "listen" to recordings.
+The model grows in three versions: first one instrument at a time, then one instrument well,
+then instruments together.
+
+**v0 — single instrument, baseline** (done)
+- [x] Setup: venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
+- [x] Instruments: ranges, polyphony, breathing, guitar/bass fingering; scales and a hand-written trio.
+- [x] Data: Weimar Jazz Database + MAESTRO, performance-time tokens with style/instrument conditioning.
+- [x] Train: 25M-parameter GPT, ~35 min on the laptop GPU.
+- [x] Play: generation, playability report, web UI with a synced piano roll.
+
+The pipeline works end to end, but the music is not good yet: phrases wander and there is little
+long-range structure.
+
+**v1 — one instrument, played well (piano first)**
+- [ ] Data: [PianoCoRe](https://huggingface.co/datasets/SyMuPe/PianoCoRe) tier B (~18,700 h of
+      classical piano, 478 composers, deduplicated and quality-filtered) +
+      [PiJAMA](https://almostimplemented.github.io/PiJAMA/) (200+ h of jazz piano).
+- [ ] Model: ~100M parameters, 2048-token context, KV-cache generation.
+- [ ] Train on a rented A100 (RunPod); tokenization parallel and memory-mapped to handle billions of tokens.
+- [ ] Compare v0 and v1 on the same prompts in the web UI.
+
+**v2 — instruments together**
+- [ ] Multi-track tokens: every note carries its instrument; the header lists the ensemble.
+- [ ] Jazz combo from the Weimar Jazz Database: solo + walking bass + chord-based comping, time-aligned.
+- [ ] Real arrangements from the [Lakh MIDI Dataset](https://colinraffel.com/projects/lmd/) (strings, winds, guitar, drums).
+
+**Later**
+- Expressive performance (vibrato, bends, ghost notes), DDSP timbre, audio → notes transcription
+  so the model can "listen" to recordings.
 
 ## Data (openly licensed only)
 
@@ -97,7 +117,9 @@ takes can be switched between *as generated* and *made playable*.
 |---|---|---|---|
 | [Weimar Jazz Database](https://jazzomat.hfm-weimar.de/dbformat/dboverview.html) | 456 transcribed jazz solos (sax, trumpet, trombone, …) and the walking bass line under them | 200k solo notes, 1.3M tokens | ODbL 1.0 |
 | [MAESTRO v3](https://magenta.tensorflow.org/datasets/maestro) | 1,276 classical piano performances, labelled by composer (Mozart: 38 pieces, 5.6 h) | 199 h, 27M tokens | CC BY-NC-SA 4.0 (non-commercial) |
-| [Lakh MIDI Dataset](https://colinraffel.com/projects/lmd/) | *planned*: multi-instrument parts (guitar, bass) | ~170k files | CC BY 4.0 |
+| [PianoCoRe](https://huggingface.co/datasets/SyMuPe/PianoCoRe) | *v1*: classical piano performances with composer labels | ~18,700 h (tier B) | CC BY-NC-SA 4.0 (non-commercial) |
+| [PiJAMA](https://almostimplemented.github.io/PiJAMA/) | *v1*: solo jazz piano | 200+ h | CC BY-NC 4.0 (non-commercial) |
+| [Lakh MIDI Dataset](https://colinraffel.com/projects/lmd/) | *v2*: multi-instrument arrangements | ~170k files | CC BY 4.0 |
 
 Jazz is ~5% of the tokens, so training will sample by source rather than by token count.
 
