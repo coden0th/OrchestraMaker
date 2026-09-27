@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Data, models, outputs (large / separately licensed)
+data/
+checkpoints/
+runs/
+outputs/
+*.sf2
+*.sf3
+*.wav
+*.mp3
+*.pt
+*.safetensors
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
