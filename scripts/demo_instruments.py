@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orchestramaker.instruments import ALTO_SAX, BASS, GUITAR, INSTRUMENTS, Note
-from orchestramaker.render import render
+from orchestramaker.takes import save_take
 
 OUT = Path(__file__).resolve().parent.parent / "outputs/stage1"
 BPM = 132
@@ -75,10 +75,13 @@ def main():
     for instrument in INSTRUMENTS.values():
         notes = scale(instrument)
         assert not instrument.check(notes), instrument.check(notes)
-        print(f"  {render([(instrument, notes)], OUT / f'scale_{instrument.name}.wav').name}")
+        save_take(OUT, f"scale_{instrument.name}", [("hand-written", [(instrument, notes)])],
+                  {"title": f"{instrument.name} scale", "instrument": instrument.name})
+        print(f"  scale_{instrument.name}")
 
     print("Trio (ii-V-I in C):")
-    print(f"  {render(trio(), OUT / 'trio_ii_V_I.wav').name}")
+    save_take(OUT, "trio_ii_V_I", [("hand-written", trio())], {"title": "ii-V-I trio in C, swung"})
+    print("  trio_ii_V_I")
 
     print("Rule checks on deliberately unplayable input:")
     print("  sax chord:     ", ALTO_SAX.check([Note(60, 0, 1), Note(64, 0, 1)]))

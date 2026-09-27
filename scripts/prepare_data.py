@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from orchestramaker.datasets import load_maestro, load_wjazzd
 from orchestramaker.instruments import INSTRUMENTS
-from orchestramaker.render import render
+from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import Tokenizer
 
 OUT = ROOT / "data/tokens"
@@ -65,8 +65,9 @@ def main():
         r = next(r for r in records if pick(r))
         style, inst, notes = tokenizer.decode(r["tokens"])
         notes = [n for n in notes if n.start < 30]
-        path = render([(INSTRUMENTS[inst], notes)], LISTEN / f"roundtrip_{style}_{inst}.wav")
-        print(f"rendered {path.name}: {r['title']}")
+        save_take(LISTEN, f"roundtrip_{style}_{inst}", [("decoded from tokens", [(INSTRUMENTS[inst], notes)])],
+                  {"title": r["title"], "style": style, "instrument": inst, "source": r["source"]})
+        print(f"rendered roundtrip_{style}_{inst}: {r['title']}")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@
     .venv/bin/python scripts/generate.py --all          # one take for a set of pairings
 
 --prime N starts from the first N seconds of a real validation piece and lets the model continue.
-Writes <name>_raw.wav (exactly what the model played) and <name>.wav (after make_playable).
+Each take is saved as WAV + JSON with two versions: exactly what the model played, and the same
+after make_playable. Browse them with scripts/serve.py.
 """
 
 import argparse
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from orchestramaker.instruments import INSTRUMENTS
 from orchestramaker.model import GPT, GPTConfig
-from orchestramaker.render import render
+from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import Tokenizer
 
 PAIRINGS = [("mozart", "piano"), ("bach", "piano"), ("chopin", "piano"),
@@ -32,7 +33,9 @@ def load(checkpoint, device):
     model = GPT(GPTConfig(**ckpt["model_config"])).to(device).eval()
     model.load_state_dict(ckpt["model"])
     print(f"loaded {checkpoint.name}: step {ckpt['step']}, val {ckpt['val']}")
-    return model, Tokenizer(**ckpt["vocab"])
+    info = {"checkpoint": str(checkpoint.relative_to(ROOT)), "step": ckpt["step"],
+            "val_loss": {k: round(v, 3) for k, v in ckpt["val"].items()}}
+    return model, Tokenizer(**ckpt["vocab"]), info
 
 
 def prime_tokens(tokenizer, style, instrument, seconds):
@@ -41,12 +44,17 @@ def prime_tokens(tokenizer, style, instrument, seconds):
                  and p["instrument"] == instrument)
     _, _, notes = tokenizer.decode(piece["tokens"])
     print(f"  priming with {seconds}s of: {piece['title']}")
-    return tokenizer.encode([n for n in notes if n.start < seconds], style, instrument)[:-1]  # drop EOS
+    return tokenizer.encode([n for n in notes if n.start < seconds], style, instrument)[:-1], piece["title"]
 
 
-def play(model, tokenizer, style, instrument, args, device, out_dir):
-    ids = prime_tokens(tokenizer, style, instrument, args.prime) if args.prime else \
-        [tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]
+def play(model, tokenizer, info, style, instrument, args, device, out_dir):
+    meta = {"style": style, "instrument": instrument, **info,
+            "temperature": args.temperature, "top_p": args.top_p, "seed": args.seed}
+    if args.prime:
+        ids, meta["prime_title"] = prime_tokens(tokenizer, style, instrument, args.prime)
+        meta["prime_seconds"] = args.prime
+    else:
+        ids = [tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]
     idx = torch.tensor([ids], device=device)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         out = model.generate(idx, args.tokens, temperature=args.temperature, top_p=args.top_p, eos=tokenizer.eos)
@@ -56,8 +64,7 @@ def play(model, tokenizer, style, instrument, args, device, out_dir):
     raw_problems = inst.check(notes)
     fixed = inst.make_playable(notes)
     name = f"{style}_{instrument}" + ("_primed" if args.prime else "")
-    render([(inst, notes)], out_dir / f"{name}_raw.wav")
-    render([(inst, fixed)], out_dir / f"{name}.wav")
+    save_take(out_dir, name, [("as generated", [(inst, notes)]), ("made playable", [(inst, fixed)])], meta)
     length = max((n.end for n in notes), default=0)
     print(f"  {name}: {len(notes)} notes, {length:.0f}s, {len(raw_problems)} playability problems as generated"
           f"{' e.g. ' + raw_problems[0] if raw_problems else ''}; after fix: {len(inst.check(fixed))}")
@@ -80,10 +87,10 @@ def main():
 
     torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, tokenizer = load(ROOT / args.checkpoint, device)
+    model, tokenizer, info = load(ROOT / args.checkpoint, device)
     out_dir = ROOT / args.out
     for style, instrument in PAIRINGS if args.all else [(args.style, args.instrument)]:
-        play(model, tokenizer, style, instrument, args, device, out_dir)
+        play(model, tokenizer, info, style, instrument, args, device, out_dir)
     print(f"WAV files in {out_dir}")
 
 

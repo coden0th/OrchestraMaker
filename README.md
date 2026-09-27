@@ -60,9 +60,24 @@ python3 -m venv .venv
 scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MIT)
 .venv/bin/python scripts/demo_instruments.py    # writes WAVs to outputs/stage1/
 .venv/bin/python scripts/prepare_data.py        # downloads datasets (~100 MB), tokenizes into data/tokens/
+.venv/bin/python scripts/train.py configs/base.json   # ~35 min on an RTX 5060 Laptop GPU
+.venv/bin/python scripts/generate.py --all            # takes into outputs/stage4/
 ```
 
 `pyfluidsynth` needs the system FluidSynth library (`sudo apt install libfluidsynth3` on Ubuntu).
+
+## Listening UI
+
+```bash
+.venv/bin/python scripts/serve.py                                  # http://127.0.0.1:8000
+.venv/bin/python scripts/watch_progress.py --run checkpoints/base  # optional: takes from each new checkpoint
+```
+
+Every take (hand-written demos, dataset round trips, model generations) shows up with its audio and a
+piano roll: the keys light up as notes sound, notes outside the instrument's range are red, and model
+takes can be switched between *as generated* and *made playable*.
+
+![Web UI: piano roll of the hand-written ii-V-I trio](docs/webui.png)
 
 ## Roadmap
 

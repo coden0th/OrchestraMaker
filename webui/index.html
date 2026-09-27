@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OrchestraMaker Takes</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1f1f22; --muted: #6c6b70; --line: #e2e0da;
+    --accent: #3565c9; --roll: #fbfaf7; --row-black: #f0eee9; --octave: #d9d6cf;
+    --key-white: #ffffff; --key-black: #2b2b30; --bad: #d23f3f; --playhead: #e08a1e;
+    --outside: rgba(210, 63, 63, 0.07); --prime: rgba(224, 138, 30, 0.10);
+    --track0: #3565c9; --track1: #2a9a6a; --track2: #b04fc4; --chip: #efede8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151518; --panel: #1d1d21; --text: #ececef; --muted: #9a99a1; --line: #2e2e34;
+      --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
+      --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
+      --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
+      --track0: #7aa2f7; --track1: #5fcf9c; --track2: #d58cf0; --chip: #2a2a30;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151518; --panel: #1d1d21; --text: #ececef; --muted: #9a99a1; --line: #2e2e34;
+    --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
+    --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
+    --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
+    --track0: #7aa2f7; --track1: #5fcf9c; --track2: #d58cf0; --chip: #2a2a30;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 300px 1fr; min-height: 100vh; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; max-height: 100vh;
+          position: sticky; top: 0; }
+  aside header { padding: 16px 16px 8px; }
+  aside h1 { font-size: 16px; margin: 0; }
+  aside p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .group { padding: 10px 16px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+           color: var(--muted); }
+  .take { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit;
+          padding: 7px 16px; cursor: pointer; font: inherit; border-left: 3px solid transparent; }
+  .take:hover { background: var(--chip); }
+  .take.active { border-left-color: var(--accent); background: var(--chip); }
+  .sub { color: var(--muted); font-size: 12px; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 8px; margin-left: 6px; }
+  .badge.ok { color: var(--track1); }
+  .badge.bad { color: var(--bad); }
+  main { padding: 20px 24px; min-width: 0; }
+  h2 { margin: 0 0 6px; font-size: 20px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .chip { background: var(--chip); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: var(--panel); color: var(--text); padding: 5px 10px; cursor: pointer;
+                font: inherit; font-size: 13px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: var(--panel); }
+  audio { width: min(100%, 520px); height: 36px; }
+  .rollbox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 480px; cursor: pointer; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); padding: 8px 12px;
+            border-top: 1px solid var(--line); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px;
+        vertical-align: -1px; }
+  .now { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; min-width: 150px; }
+  details { margin-top: 14px; }
+  details li { color: var(--muted); font-size: 13px; }
+  .empty { color: var(--muted); max-width: 520px; }
+  code { background: var(--chip); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; }
+    aside { position: static; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 16px; }
+    canvas { height: 360px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header>
+      <h1>OrchestraMaker</h1>
+      <p>Takes from <code>outputs/</code> · refreshes every 10 s</p>
+    </header>
+    <nav id="list"></nav>
+  </aside>
+  <main id="main">
+    <div class="empty" id="empty">
+      <h2>No take selected</h2>
+      <p>Pick a take on the left. New ones appear here automatically when
+        <code>scripts/generate.py</code> or <code>scripts/watch_progress.py</code> writes them.</p>
+    </div>
+    <div id="view" hidden>
+      <h2 id="title"></h2>
+      <div class="chips" id="chips"></div>
+      <div class="toolbar">
+        <div class="seg" id="versions"></div>
+        <audio id="audio" controls preload="auto"></audio>
+        <span class="now" id="now"></span>
+      </div>
+      <div class="toolbar">
+        <span class="sub">Window</span>
+        <div class="seg" id="zoom"></div>
+      </div>
+      <div class="rollbox">
+        <canvas id="roll"></canvas>
+        <div class="legend" id="legend"></div>
+      </div>
+      <details id="problems"><summary></summary><ul></ul></details>
+    </div>
+  </main>
+</div>
+<script>
+const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const BLACK = new Set([1, 3, 6, 8, 10]);
+const KEYS_W = 58, RULER_H = 22;
+const $ = id => document.getElementById(id);
+const audio = $("audio"), canvas = $("roll"), ctx = canvas.getContext("2d");
+const state = { takes: [], url: null, take: null, version: 0, span: 12, viewStart: 0, audioUrl: null };
+
+const noteName = p => NAMES[p % 12] + (Math.floor(p / 12) - 1);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+async function loadList() {
+  try {
+    state.takes = await (await fetch("/api/takes")).json();
+  } catch { return; }
+  const groups = {};
+  for (const t of state.takes) (groups[t.group] ||= []).push(t);
+  // Newest groups first, so the latest checkpoint's takes are on top.
+  const order = Object.keys(groups).sort((a, b) =>
+    Math.max(...groups[b].map(t => t.mtime)) - Math.max(...groups[a].map(t => t.mtime)));
+  const nav = $("list");
+  nav.replaceChildren();
+  for (const g of order) {
+    const h = document.createElement("div");
+    h.className = "group";
+    h.textContent = g;
+    nav.append(h);
+    for (const t of groups[g]) {
+      const b = document.createElement("button");
+      b.className = "take" + (t.url === state.url ? " active" : "");
+      const m = t.meta;
+      const sub = [m.style, m.instrument, m.step != null ? `step ${m.step}` : null].filter(Boolean).join(" · ");
+      b.innerHTML = `<div></div><div class="sub"></div>`;
+      b.firstChild.textContent = m.title || t.name;
+      const badge = document.createElement("span");
+      badge.className = "badge " + (t.problems ? "bad" : "ok");
+      badge.textContent = t.problems ? `${t.problems} unplayable` : "playable";
+      b.firstChild.append(badge);
+      b.lastChild.textContent = sub;
+      b.onclick = () => select(t.url);
+      nav.append(b);
+    }
+  }
+}
+
+async function select(url) {
+  state.url = url;
+  history.replaceState(null, "", "#" + url);
+  state.take = await (await fetch(url)).json();
+  state.take.dir = url.slice(0, url.lastIndexOf("/") + 1);
+  state.viewStart = 0;
+  $("empty").hidden = true;
+  $("view").hidden = false;
+  document.querySelectorAll(".take").forEach(b => b.classList.remove("active"));
+  loadList();
+  const m = state.take.meta;
+  $("title").textContent = m.title || state.take.name;
+  const chips = [];
+  if (m.style) chips.push(`style: ${m.style}`);
+  if (m.instrument) chips.push(`instrument: ${m.instrument}`);
+  if (m.step != null) chips.push(`checkpoint step ${m.step}`);
+  if (m.val_loss) chips.push("val loss " + Object.entries(m.val_loss).map(([k, v]) => `${k} ${v}`).join(", "));
+  if (m.prime_seconds) chips.push(`first ${m.prime_seconds}s from: ${m.prime_title}`);
+  if (m.temperature != null) chips.push(`temperature ${m.temperature}`);
+  $("chips").replaceChildren(...chips.map(c => Object.assign(document.createElement("span"),
+    { className: "chip", textContent: c })));
+  const seg = $("versions");
+  seg.replaceChildren(...state.take.versions.map((v, i) => {
+    const b = document.createElement("button");
+    b.textContent = v.label;
+    b.onclick = () => setVersion(i);
+    return b;
+  }));
+  await setVersion(0);
+}
+
+async function setVersion(i) {
+  const t = audio.currentTime, playing = !audio.paused;
+  state.version = i;
+  [...$("versions").children].forEach((b, j) => b.classList.toggle("on", j === i));
+  const v = state.take.versions[i];
+  // Fetch as a blob so seeking works even though the server doesn't do range requests.
+  const blob = await (await fetch(state.take.dir + v.audio)).blob();
+  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+  state.audioUrl = URL.createObjectURL(blob);
+  audio.src = state.audioUrl;
+  audio.currentTime = state.url === audio.dataset.url ? t : 0;
+  audio.dataset.url = state.url;
+  if (playing) audio.play();
+  for (const tr of v.tracks) tr.notes.sort((a, b) => a[1] - b[1]);
+  renderLegend(v);
+  renderProblems(v);
+  draw();
+}
+
+function renderLegend(v) {
+  const items = v.tracks.map((tr, i) =>
+    `<span><span class="sw" style="background:var(--track${i % 3})"></span>${tr.instrument}` +
+    ` (range ${noteName(tr.low)}–${noteName(tr.high)})</span>`);
+  items.push(`<span><span class="sw" style="background:var(--bad)"></span>outside the instrument's range</span>`);
+  items.push(`<span><span class="sw" style="background:var(--outside);outline:1px solid var(--line)"></span>` +
+    `rows no instrument here can play</span>`);
+  if (state.take.meta.prime_seconds)
+    items.push(`<span><span class="sw" style="background:var(--prime);outline:1px solid var(--line)"></span>` +
+      `real music the model continued from</span>`);
+  items.push(`<span>brightness = velocity · click to seek · space to play</span>`);
+  $("legend").innerHTML = items.join("");
+}
+
+function renderProblems(v) {
+  const all = v.tracks.flatMap(tr => tr.problems.map(p => `${tr.instrument}: ${p}`));
+  const d = $("problems");
+  d.hidden = !all.length;
+  d.querySelector("summary").textContent = `${all.length} playability problem${all.length === 1 ? "" : "s"}`;
+  d.querySelector("ul").replaceChildren(...all.slice(0, 200).map(p =>
+    Object.assign(document.createElement("li"), { textContent: p })));
+}
+
+function layout() {
+  const v = state.take.versions[state.version];
+  const notes = v.tracks.flatMap(tr => tr.notes);
+  let lo = Math.min(...notes.map(n => n[0])), hi = Math.max(...notes.map(n => n[0]));
+  if (!isFinite(lo)) { lo = 48; hi = 72; }
+  lo -= 2; hi += 2;
+  while (hi - lo < 24) { lo--; hi++; }
+  const end = Math.max(1, ...notes.map(n => n[1] + n[2]));
+  return { v, lo, hi, end };
+}
+
+function draw() {
+  if (!state.take) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const { v, lo, hi, end } = layout();
+  const now = audio.currentTime || 0;
+  const span = state.span === 0 ? end + 0.5 : state.span;
+  // Follow the playhead: keep it in the left third of the window while playing.
+  if (!audio.paused && (now > state.viewStart + span * 0.66 || now < state.viewStart))
+    state.viewStart = Math.max(0, now - span * 0.33);
+  if (state.span === 0) state.viewStart = 0;
+  const t0 = state.viewStart;
+  const rows = hi - lo + 1, rowH = (H - RULER_H) / rows;
+  const x = t => KEYS_W + (t - t0) / span * (W - KEYS_W);
+  const y = p => RULER_H + (hi - p) * rowH;
+
+  ctx.fillStyle = css("--roll");
+  ctx.fillRect(0, 0, W, H);
+  for (let p = lo; p <= hi; p++) {
+    if (BLACK.has(p % 12)) { ctx.fillStyle = css("--row-black"); ctx.fillRect(KEYS_W, y(p), W, rowH); }
+    if (p % 12 === 0) { ctx.fillStyle = css("--octave"); ctx.fillRect(KEYS_W, y(p) + rowH - 1, W, 1); }
+  }
+  // Rows no instrument in this take can play (per-note range problems are coloured below).
+  const low = Math.min(...v.tracks.map(tr => tr.low)), high = Math.max(...v.tracks.map(tr => tr.high));
+  ctx.fillStyle = css("--outside");
+  if (high < hi) ctx.fillRect(KEYS_W, RULER_H, W, y(high) - RULER_H);
+  if (low > lo) ctx.fillRect(KEYS_W, y(low - 1), W, H - y(low - 1));
+  if (state.take.meta.prime_seconds) {
+    ctx.fillStyle = css("--prime");
+    ctx.fillRect(KEYS_W, RULER_H, Math.max(0, x(state.take.meta.prime_seconds) - KEYS_W), H);
+  }
+
+  const sounding = new Map();
+  v.tracks.forEach((tr, i) => {
+    const color = css(`--track${i % 3}`), bad = css("--bad");
+    for (const [p, s, d, vel] of tr.notes) {
+      if (s > t0 + span) break;
+      if (s + d < t0) continue;
+      const out = p < tr.low || p > tr.high;
+      const on = s <= now && now < s + d;
+      if (on) sounding.set(p, out ? bad : color);
+      ctx.globalAlpha = on ? 1 : 0.3 + 0.6 * vel / 127;
+      ctx.fillStyle = out ? bad : color;
+      const nx = Math.max(KEYS_W, x(s));
+      ctx.fillRect(nx, y(p) + 0.5, Math.max(2, x(s + d) - nx - 1), Math.max(1.5, rowH - 1));
+      if (on) { ctx.globalAlpha = 1; ctx.strokeStyle = css("--text"); ctx.lineWidth = 1;
+                ctx.strokeRect(nx, y(p) + 0.5, Math.max(2, x(s + d) - nx - 1), Math.max(1.5, rowH - 1)); }
+    }
+  });
+  ctx.globalAlpha = 1;
+
+  // Keyboard: pressed keys light up in the track colour.
+  for (let p = lo; p <= hi; p++) {
+    const black = BLACK.has(p % 12);
+    ctx.fillStyle = sounding.get(p) || css(black ? "--key-black" : "--key-white");
+    ctx.fillRect(0, y(p), black ? KEYS_W * 0.62 : KEYS_W, rowH - 0.5);
+    if (p % 12 === 0 && rowH >= 3) {
+      ctx.fillStyle = css("--muted");
+      ctx.font = `${Math.min(11, Math.max(8, rowH))}px system-ui`;
+      ctx.textBaseline = "middle";
+      ctx.fillText(noteName(p), KEYS_W - 26, y(p) + rowH / 2);
+    }
+  }
+  ctx.fillStyle = css("--line");
+  ctx.fillRect(KEYS_W - 1, RULER_H, 1, H);
+
+  // Time ruler.
+  ctx.fillStyle = css("--panel");
+  ctx.fillRect(0, 0, W, RULER_H);
+  ctx.fillStyle = css("--muted");
+  ctx.font = "11px system-ui";
+  ctx.textBaseline = "middle";
+  const step = span > 60 ? 10 : span > 20 ? 5 : span > 8 ? 2 : 1;
+  for (let s = Math.ceil(t0 / step) * step; s <= t0 + span; s += step) {
+    ctx.fillRect(x(s), RULER_H - 6, 1, 6);
+    ctx.fillText(fmt(s), x(s) + 3, RULER_H / 2 - 1);
+  }
+  // Playhead.
+  ctx.fillStyle = css("--playhead");
+  ctx.fillRect(x(now) - 1, 0, 2, H);
+
+  const names = [...sounding.keys()].sort((a, b) => a - b).map(noteName).join(" ");
+  $("now").textContent = `${fmt(now)} / ${fmt(end)}  ${names}`;
+}
+
+function loop() {
+  draw();
+  if (!audio.paused) requestAnimationFrame(loop);
+}
+
+canvas.addEventListener("click", e => {
+  if (!state.take) return;
+  const { end } = layout();
+  const span = state.span === 0 ? end + 0.5 : state.span;
+  const rect = canvas.getBoundingClientRect();
+  const t = state.viewStart + (e.clientX - rect.left - KEYS_W) / (rect.width - KEYS_W) * span;
+  audio.currentTime = Math.max(0, t);
+  draw();
+});
+canvas.addEventListener("wheel", e => {
+  if (!state.take || state.span === 0) return;
+  e.preventDefault();
+  state.viewStart = Math.max(0, state.viewStart + (e.deltaX || e.deltaY) / 400 * state.span);
+  draw();
+}, { passive: false });
+audio.addEventListener("play", loop);
+audio.addEventListener("seeked", draw);
+audio.addEventListener("pause", draw);
+window.addEventListener("resize", draw);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && state.take && e.target.tagName !== "BUTTON") {
+    e.preventDefault();
+    audio.paused ? audio.play() : audio.pause();
+  }
+});
+
+$("zoom").replaceChildren(...[[6, "6 s"], [12, "12 s"], [24, "24 s"], [0, "whole"]].map(([s, label]) => {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.classList.toggle("on", s === state.span);
+  b.onclick = () => {
+    state.span = s;
+    [...$("zoom").children].forEach(c => c.classList.toggle("on", c === b));
+    draw();
+  };
+  return b;
+}));
+
+loadList();
+setInterval(loadList, 10000);
+if (location.hash.length > 1) select(decodeURIComponent(location.hash.slice(1)));
+</script>
+</body>
+</html>
