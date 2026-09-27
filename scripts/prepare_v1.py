@@ -32,8 +32,16 @@ TOKENIZER: Tokenizer | None = None
 STYLE_OF: dict[str, str] = {}
 
 
-def composer_styles(hours: Counter, min_hours: float) -> dict[str, str]:
-    """Composer name -> style; surname only unless two kept composers share it (bach_johann_sebastian)."""
+def composer_styles(hours: Counter, min_hours: float, known: set[str] | None = None) -> dict[str, str]:
+    """Composer name -> style; surname only unless two kept composers share it (bach_johann_sebastian).
+    With a known vocabulary, a surname style goes to the composer with the most hours under that surname."""
+    if known is not None:
+        styles = {}
+        for c in sorted(hours, key=hours.get, reverse=True):
+            surname, full = slugify(c.split(",")[0]), slugify(c)
+            styles[c] = full if full in known else surname if surname in known and surname not in styles.values() \
+                else "classical_other"
+        return styles
     kept = [c for c, h in hours.items() if h >= min_hours]
     surname = {c: slugify(c.split(",")[0]) for c in kept}
     clashes = Counter(surname.values())
@@ -47,7 +55,8 @@ def metadata(args):
     for path, group in groups:
         for row in pianocore_rows(path, group, ["composer", "performance_duration"]):
             hours[row["composer"]] += row["performance_duration"] / 3600
-    styles = composer_styles(hours, args.min_hours)
+    known = set(Tokenizer.load(args.vocab).styles) if args.vocab else None
+    styles = composer_styles(hours, args.min_hours, known)
 
     files = pijama_files(args.pijama)
     jazz_hours = Counter()
@@ -109,6 +118,8 @@ def main():
     ap.add_argument("--jazz-min-hours", type=float, default=3)
     ap.add_argument("--workers", type=int, default=len(os.sched_getaffinity(0)))
     args = ap.parse_args()
+    if args.vocab:  # the vocabulary decides the styles: map every pianist, encode() folds unknown ones
+        args.jazz_min_hours = 0
 
     style_of, groups, files = metadata(args)
     if args.vocab:

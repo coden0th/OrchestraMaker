@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from orchestramaker.batches import load_pieces
 from orchestramaker.instruments import INSTRUMENTS
+from orchestramaker.metrics import most_typical, reference_windows
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import Tokenizer
@@ -59,11 +60,18 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
         meta["prime_seconds"] = args.prime
     else:
         ids = [tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]
-    idx = torch.tensor([ids], device=device)
+    candidates = getattr(args, "candidates", 1)
+    idx = torch.tensor([ids], device=device).repeat(candidates, 1)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         out = model.generate(idx, args.tokens, temperature=args.temperature, top_p=args.top_p, eos=tokenizer.eos)
-    _, _, notes = tokenizer.decode(out[0].tolist())
-    notes = [n for n in notes if n.start < args.seconds]
+    takes = [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out]
+    notes = takes[0]
+    if candidates > 1:  # keep the take whose statistics are closest to real music of this style
+        ref = reference_windows(load_pieces(ROOT / info["data"]), tokenizer, style, args.seconds, 40,
+                                from_start=not args.prime, instrument=instrument)
+        if ref:
+            best, meta["choice"] = most_typical(takes, ref)
+            notes = takes[best]
     inst = INSTRUMENTS[instrument]
     raw_problems = inst.check(notes)
     fixed = inst.make_playable(notes)
@@ -71,20 +79,23 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     save_take(out_dir, name, [("as generated", [(inst, notes)]), ("made playable", [(inst, fixed)])], meta)
     length = max((n.end for n in notes), default=0)
     print(f"  {name}: {len(notes)} notes, {length:.0f}s, {len(raw_problems)} playability problems as generated"
-          f"{' e.g. ' + raw_problems[0] if raw_problems else ''}; after fix: {len(inst.check(fixed))}")
+          f"{' e.g. ' + raw_problems[0] if raw_problems else ''}; after fix: {len(inst.check(fixed))}"
+          f"{'; picked: ' + meta['choice'] if 'choice' in meta else ''}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default="checkpoints/base/best.pt")
+    ap.add_argument("--checkpoint", default="checkpoints/v1_piano/best.pt")
     ap.add_argument("--style")
     ap.add_argument("--instrument")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--prime", type=float, default=0, help="seconds of a real piece to continue from")
-    ap.add_argument("--tokens", type=int, default=1500)
+    ap.add_argument("--tokens", type=int, default=2400)
     ap.add_argument("--seconds", type=float, default=45)
-    ap.add_argument("--temperature", type=float, default=1.0)
-    ap.add_argument("--top_p", type=float, default=0.95)
+    # Measured with evaluate_samples.py: top_p < 1 and temperature 1.0 made takes sparse and loopy.
+    ap.add_argument("--temperature", type=float, default=1.1)
+    ap.add_argument("--top_p", type=float, default=1.0)
+    ap.add_argument("--candidates", type=int, default=4, help="generate N, keep the most typical")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="outputs/stage4")
     args = ap.parse_args()
