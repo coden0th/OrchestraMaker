@@ -103,12 +103,30 @@ The pipeline works end to end, but the music is not good yet: phrases wander and
 long-range structure.
 
 **v1 — one instrument, played well (piano first)**
-- [ ] Data: [PianoCoRe](https://huggingface.co/datasets/SyMuPe/PianoCoRe) tier B (~18,700 h of
+- [x] Data: [PianoCoRe](https://huggingface.co/datasets/SyMuPe/PianoCoRe) tier B (18,758 h of
       classical piano, 478 composers, deduplicated and quality-filtered) +
-      [PiJAMA](https://almostimplemented.github.io/PiJAMA/) (200+ h of jazz piano).
-- [ ] Model: ~100M parameters, 2048-token context, KV-cache generation.
-- [ ] Train on a rented A100 (RunPod); tokenization parallel and memory-mapped to handle billions of tokens.
-- [ ] Compare v0 and v1 on the same prompts in the web UI.
+      [PiJAMA](https://almostimplemented.github.io/PiJAMA/) (221 h of jazz piano, 120 pianists);
+      60 style tokens (composers, jazz pianists), 1.97B training tokens.
+- [x] Model: 85M parameters (12 × 768), 2048-token context, KV-cache generation.
+- [x] Trained on a rented A100 (RunPod): 26k steps, 1.7B tokens, 123 min, ~4 USD; followed live
+      from the local web UI. Validation loss 1.56 (classical), 2.10 (jazz).
+- [x] Measured takes against real music (`scripts/evaluate_samples.py`) and fixed sampling.
+- [ ] Long context: `configs/v1_long.json` fine-tunes v1 at 8192 tokens (a whole 4-minute piece).
+      Ready to run: ~40 min on an A100, ~4 h on the laptop.
+
+What we learned from v1:
+- **Sampling mattered as much as training.** With temperature 1.0 / top-p 0.95, Chopin takes had
+  half the note density of real Chopin and 6 of 16 looped; 0 of 16 looked typical. Temperature 1.1
+  and no top-p: 9 of 16 (Mozart: 7 → 15 of 16). min-p made takes go silent. Picking the most
+  coherent of 8 typical candidates (model log-probability) helps further.
+- **Mozart comes out best, jazz worst.** Per-style validation loss: Grieg 1.36, Debussy 1.44,
+  Chopin 1.51, Mozart 1.61, jazz piano 2.03, Art Tatum 2.23. Chopin is predicted well but
+  generated worse than Mozart: one wrong note derails chromatic harmony more easily.
+- **Takes are original.** A Chopin take shares 5.5% of its 8-note sequences with 44k Chopin
+  training performances (max 2.1% with any single piece) — `scripts/check_memorization.py`.
+- **No long-form structure yet.** Four-minute takes never bring the opening theme back (real
+  Mozart: 25% of opening shapes return in the last third), even with the opening kept in context;
+  without it the texture drifts (20 notes/s mid-piece vs ~8 in real Mozart).
 
 **v2 — instruments together**
 - [ ] Multi-track tokens: every note carries its instrument; the header lists the ensemble.
