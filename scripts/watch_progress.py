@@ -39,7 +39,8 @@ def main():
     args = ap.parse_args()
 
     run = ROOT / args.run
-    gen_args = argparse.Namespace(prime=0, tokens=1200, seconds=args.seconds, temperature=1.0, top_p=0.95, seed=0)
+    gen_args = argparse.Namespace(prime=0, tokens=1800, seconds=args.seconds, temperature=1.1, top_p=1.0, seed=0,
+                                  candidates=4)  # sampling settings measured in evaluate_samples.py
     device = "cuda" if torch.cuda.is_available() else "cpu"
     done_step, seen_mtime = -args.every, None
     print(f"watching {run} (every {args.every} steps)", flush=True)
