@@ -61,13 +61,19 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps).to(x.dtype) * self.weight
 
 
-def rotate(x, pos, base):
-    """Rotary position embedding: rotate each (first half, second half) pair of channels by an angle
-    proportional to the position, so attention scores depend on relative distance."""
-    half = x.shape[-1] // 2
-    freqs = base ** (-torch.arange(half, device=x.device, dtype=torch.float32) / half)
+def rope_tables(pos, head_dim, base):
+    """Rotary position embedding angles for these positions, computed once per forward pass."""
+    half = head_dim // 2
+    freqs = base ** (-torch.arange(half, device=pos.device, dtype=torch.float32) / half)
     angles = pos.float()[:, None] * freqs[None]                     # (T, half)
-    cos, sin = angles.cos().to(x.dtype), angles.sin().to(x.dtype)
+    return angles.cos(), angles.sin()
+
+
+def rotate(x, rope):
+    """Rotate each (first half, second half) channel pair by a position-dependent angle, so attention
+    scores depend on relative distance."""
+    cos, sin = (t.to(x.dtype) for t in rope)
+    half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
 
@@ -75,7 +81,7 @@ def rotate(x, pos, base):
 class LlamaBlock(nn.Module):
     def __init__(self, c: GPTConfig):
         super().__init__()
-        self.n_head, self.dropout, self.base = c.n_head, c.dropout, c.rope_base
+        self.n_head, self.dropout = c.n_head, c.dropout
         hidden = c.mlp_hidden or 64 * round(8 * c.n_embd / 3 / 64)
         self.ln1, self.ln2 = RMSNorm(c.n_embd), RMSNorm(c.n_embd)
         self.qkv = nn.Linear(c.n_embd, 3 * c.n_embd, bias=False)
@@ -89,7 +95,7 @@ class LlamaBlock(nn.Module):
         B, T, C = x.shape
         q, k, v = (t.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
                    for t in self.qkv(self.ln1(x)).split(C, dim=2))
-        q, k = rotate(q, pos, self.base), rotate(k, pos, self.base)   # cached keys are already rotated
+        q, k = rotate(q, pos), rotate(k, pos)   # pos: (cos, sin) tables; cached keys are already rotated
         if past is not None:
             k, v = torch.cat([past[0], k], dim=2), torch.cat([past[1], v], dim=2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=past is None,
@@ -135,6 +141,8 @@ class GPT(nn.Module):
         offset = past[0][0].shape[2] if past else 0
         pos = torch.arange(offset, offset + idx.shape[1], device=idx.device)
         x = self.tok_emb(idx) + (self.pos_emb(pos) if self.pos_emb is not None else 0)
+        if self.pos_emb is None:  # llama blocks take the rotary tables instead of positions
+            pos = rope_tables(pos, self.config.n_embd // self.config.n_head, self.config.rope_base)
         x = self.drop(x)
         cache = []
         for i, block in enumerate(self.blocks):
