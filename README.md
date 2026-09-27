@@ -39,8 +39,11 @@ project rather than a polished library.
                         instrument rules: range, polyphony, playability
 ```
 
-- **Performer model** — GPT-style decoder over tokenized MIDI (via [MidiTok](https://github.com/Natooz/MidiTok)),
-  conditioned on style and instrument tokens. Target size: ~10–50M parameters.
+- **Performer model** — GPT-style decoder over note tokens, conditioned on style and
+  instrument tokens. Target size: ~10–50M parameters.
+- **Tokens** — `BOS STYLE_mozart INST_piano`, then per note `[TIME_k] PITCH_p VEL_v DUR_d`.
+  Time is *performance* time in 10 ms steps rather than a score grid, so swing feel and
+  rubato are kept. 345 tokens in total.
 - **Instrument definitions** — range, max polyphony, breathing/phrase limits, idiomatic
   techniques. Used both as training-time conditioning and as generation-time constraints.
 - **Instrument engine** — starts with [FluidSynth](https://www.fluidsynth.org/) + a free
@@ -56,6 +59,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MIT)
 .venv/bin/python scripts/demo_instruments.py    # writes WAVs to outputs/stage1/
+.venv/bin/python scripts/prepare_data.py        # downloads datasets (~100 MB), tokenizes into data/tokens/
 ```
 
 `pyfluidsynth` needs the system FluidSynth library (`sudo apt install libfluidsynth3` on Ubuntu).
@@ -65,7 +69,7 @@ scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MI
 - [x] **0. Setup** — venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
 - [x] **1. Instruments** — define guitar, bass guitar, alto/tenor sax, piano; render a scale
       and a short phrase on each to verify the engine.
-- [ ] **2. Data** — build the corpus from openly licensed sources (see below), tokenize, split.
+- [x] **2. Data** — build the corpus from openly licensed sources (see below), tokenize, split.
 - [ ] **3. Train** — small transformer, style + instrument conditioning.
 - [ ] **4. Play** — generate, apply instrument constraints, render, listen.
 - [ ] **5. Evaluate** — playability violations, pitch/rhythm statistics vs. real data, blind listening.
@@ -74,12 +78,13 @@ scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MI
 
 ## Data (openly licensed only)
 
-| Source | Content | License |
-|---|---|---|
-| [music21 corpus](https://www.music21.org/music21docs/about/referenceCorpus.html) | Mozart, Bach, Beethoven, Haydn scores | Public domain / per-file open |
-| [Weimar Jazz Database](https://jazzomat.hfm-weimar.de/dbformat/dboverview.html) | 456 transcribed jazz solos (sax, trumpet, …) | ODbL 1.0 |
-| [Lakh MIDI Dataset](https://colinraffel.com/projects/lmd/) | ~170k multi-instrument MIDI files | CC BY 4.0 |
-| [MAESTRO](https://magenta.tensorflow.org/datasets/maestro) | Classical piano performances | CC BY-NC-SA 4.0 (non-commercial) |
+| Source | Used for | Size | License |
+|---|---|---|---|
+| [Weimar Jazz Database](https://jazzomat.hfm-weimar.de/dbformat/dboverview.html) | 456 transcribed jazz solos (sax, trumpet, trombone, …) and the walking bass line under them | 200k solo notes, 1.3M tokens | ODbL 1.0 |
+| [MAESTRO v3](https://magenta.tensorflow.org/datasets/maestro) | 1,276 classical piano performances, labelled by composer (Mozart: 38 pieces, 5.6 h) | 199 h, 27M tokens | CC BY-NC-SA 4.0 (non-commercial) |
+| [Lakh MIDI Dataset](https://colinraffel.com/projects/lmd/) | *planned*: multi-instrument parts (guitar, bass) | ~170k files | CC BY 4.0 |
+
+Jazz is ~5% of the tokens, so training will sample by source rather than by token count.
 
 Datasets are **not** committed to this repository; scripts will download them into `data/`.
 Each dataset keeps its own license — check it before reuse.

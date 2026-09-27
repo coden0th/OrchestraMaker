@@ -4,5 +4,4 @@ torch
 pyfluidsynth   # needs the system libfluidsynth (apt: libfluidsynth3)
 numpy
 soundfile
-miditok
 symusic

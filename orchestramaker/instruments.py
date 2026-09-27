@@ -91,12 +91,22 @@ class Instrument:
         return problems
 
 
+# Standard ranges; professionals exceed them (e.g. saxophone altissimo), which check() reports.
 GUITAR = Instrument("jazz_guitar", 26, low=40, high=86, max_polyphony=6,
                     strings=(40, 45, 50, 55, 59, 64), frets=22)
 BASS = Instrument("electric_bass", 33, low=28, high=67, max_polyphony=4,
                   strings=(28, 33, 38, 43), frets=24)
+UPRIGHT_BASS = Instrument("acoustic_bass", 32, low=28, high=67, max_polyphony=2,
+                          strings=(28, 33, 38, 43), frets=24)
+SOPRANO_SAX = Instrument("soprano_sax", 64, low=56, high=87, max_polyphony=1, max_phrase_sec=10)
 ALTO_SAX = Instrument("alto_sax", 65, low=49, high=80, max_polyphony=1, max_phrase_sec=10)
 TENOR_SAX = Instrument("tenor_sax", 66, low=44, high=76, max_polyphony=1, max_phrase_sec=12)
+BARITONE_SAX = Instrument("baritone_sax", 67, low=36, high=69, max_polyphony=1, max_phrase_sec=12)
+TRUMPET = Instrument("trumpet", 56, low=52, high=84, max_polyphony=1, max_phrase_sec=10)
+TROMBONE = Instrument("trombone", 57, low=40, high=77, max_polyphony=1, max_phrase_sec=12)
+CLARINET = Instrument("clarinet", 71, low=50, high=94, max_polyphony=1, max_phrase_sec=12)
+VIBRAPHONE = Instrument("vibraphone", 11, low=53, high=89, max_polyphony=4)
 PIANO = Instrument("piano", 0, low=21, high=108, max_polyphony=10)
 
-INSTRUMENTS = {i.name: i for i in (GUITAR, BASS, ALTO_SAX, TENOR_SAX, PIANO)}
+INSTRUMENTS = {i.name: i for i in (GUITAR, BASS, UPRIGHT_BASS, SOPRANO_SAX, ALTO_SAX, TENOR_SAX,
+                                   BARITONE_SAX, TRUMPET, TROMBONE, CLARINET, VIBRAPHONE, PIANO)}
