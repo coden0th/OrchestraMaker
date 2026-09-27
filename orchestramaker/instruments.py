@@ -44,6 +44,29 @@ class Instrument:
             problems += self._check_breath(notes)
         return problems
 
+    def make_playable(self, notes: list[Note]) -> list[Note]:
+        """Minimal edits so check() passes on range and polyphony: move notes by octaves into range,
+        cut ringing notes when the instrument runs out of voices."""
+        fixed = []
+        for n in sorted(notes, key=lambda n: (n.start, -n.pitch)):
+            pitch = n.pitch
+            while pitch < self.low:
+                pitch += 12
+            while pitch > self.high:
+                pitch -= 12
+            fixed.append(Note(pitch, n.start, n.duration, n.velocity))
+        out: list[Note] = []
+        for n in fixed:
+            sounding = [i for i, m in enumerate(out) if m.end > n.start]
+            if len(sounding) >= self.max_polyphony:
+                if any(out[i].start == n.start for i in sounding):
+                    continue  # chord already has as many notes as the instrument allows
+                for i in sounding[:len(sounding) - self.max_polyphony + 1]:
+                    m = out[i]
+                    out[i] = Note(m.pitch, m.start, n.start - m.start, m.velocity)
+            out.append(n)
+        return out
+
     def _check_polyphony(self, notes: list[Note]) -> list[str]:
         # Note-offs sort before note-ons at the same time, so legato lines don't count as overlap.
         events = sorted([(n.start, 1) for n in notes] + [(n.end, -1) for n in notes])
