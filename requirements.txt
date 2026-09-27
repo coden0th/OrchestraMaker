@@ -1,0 +1,8 @@
+# Install PyTorch first, using the CUDA build that matches your GPU.
+# RTX 50xx (Blackwell) needs CUDA 12.8+: https://download.pytorch.org/whl/cu128
+torch
+pyfluidsynth   # needs the system libfluidsynth (apt: libfluidsynth3)
+numpy
+soundfile
+miditok
+symusic

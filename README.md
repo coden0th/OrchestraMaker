@@ -48,10 +48,22 @@ project rather than a polished library.
   synthesis, where a network learns to *control* an instrument's pitch and loudness curves
   from real recordings — the closest thing to actually learning to play it.
 
+## Quick start
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu128   # pick your CUDA build
+.venv/bin/pip install -r requirements.txt
+scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MIT)
+.venv/bin/python scripts/demo_instruments.py    # writes WAVs to outputs/stage1/
+```
+
+`pyfluidsynth` needs the system FluidSynth library (`sudo apt install libfluidsynth3` on Ubuntu).
+
 ## Roadmap
 
 - [ ] **0. Setup** — venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
-- [ ] **1. Instruments** — define guitar, bass guitar, alto/tenor sax, piano; render a scale
+- [x] **1. Instruments** — define guitar, bass guitar, alto/tenor sax, piano; render a scale
       and a short phrase on each to verify the engine.
 - [ ] **2. Data** — build the corpus from openly licensed sources (see below), tokenize, split.
 - [ ] **3. Train** — small transformer, style + instrument conditioning.
