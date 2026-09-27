@@ -1,0 +1,17 @@
+{
+  "model": {"block_size": 1024, "n_layer": 8, "n_head": 8, "n_embd": 512, "dropout": 0.1},
+  "source_weights": {"maestro": 0.7, "wjazzd": 0.3},
+  "max_transpose": 5,
+  "batch_size": 32,
+  "max_steps": 6000,
+  "lr": 1e-3,
+  "min_lr": 1e-4,
+  "warmup_steps": 300,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "eval_every": 250,
+  "eval_batches": 20,
+  "compile": false,
+  "out_dir": "checkpoints/base",
+  "seed": 0
+}
