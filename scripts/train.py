@@ -39,6 +39,19 @@ def load_config(path, overrides):
     return cfg
 
 
+def init_weights(model, checkpoint, device):
+    """Start from a trained model. A longer context gets the learned position embeddings stretched
+    (linear interpolation: position i of the new context borrows from position i * old / new)."""
+    state = torch.load(checkpoint, map_location=device, weights_only=False)["model"]
+    old, new = state["pos_emb.weight"], model.pos_emb.weight
+    if old.shape[0] != new.shape[0]:
+        state["pos_emb.weight"] = torch.nn.functional.interpolate(
+            old.T[None], size=new.shape[0], mode="linear", align_corners=True)[0].T
+        print(f"stretched position embeddings {old.shape[0]} -> {new.shape[0]}")
+    model.load_state_dict(state)
+    print(f"initialized from {checkpoint}")
+
+
 def lr_at(step, cfg):
     if step < cfg["warmup_steps"]:
         return cfg["lr"] * (step + 1) / cfg["warmup_steps"]
@@ -86,6 +99,9 @@ def main():
 
     model_cfg = GPTConfig(vocab_size=len(tokenizer), **cfg["model"])
     model = GPT(model_cfg).to(device)
+    model.grad_checkpoint = cfg.get("grad_checkpoint", False)
+    if cfg.get("init_from") and not (args.resume and (out / "last.pt").exists()):
+        init_weights(model, ROOT / cfg["init_from"], device)
     decay = [p for p in model.parameters() if p.dim() >= 2]
     no_decay = [p for p in model.parameters() if p.dim() < 2]
     opt = torch.optim.AdamW([{"params": decay, "weight_decay": cfg["weight_decay"]},
@@ -112,16 +128,18 @@ def main():
         torch.save(ckpt, out / f"{name}.tmp")
         os.replace(out / f"{name}.tmp", out / name)  # atomic: watchers never read a half-written file
 
+    accum = cfg.get("grad_accum", 1)  # batch_size is split into `accum` micro-batches that fit in memory
     tokens_per_step = cfg["batch_size"] * cfg["model"]["block_size"]
     t0, log_t0 = time.time(), time.time()
     while step < cfg["max_steps"]:
         for group in opt.param_groups:
             group["lr"] = lr_at(step, cfg)
-        x, y = train.batch(cfg["batch_size"], device=device)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-            _, loss = fwd(x, y)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        for _ in range(accum):
+            x, y = train.batch(cfg["batch_size"] // accum, device=device)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
+                _, loss = fwd(x, y)
+            (loss / accum).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
         opt.step()
         step += 1

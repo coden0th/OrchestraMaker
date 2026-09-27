@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass
@@ -55,6 +56,7 @@ class GPT(nn.Module):
         self.ln_f = nn.LayerNorm(c.n_embd)
         self.head = nn.Linear(c.n_embd, c.vocab_size, bias=False)
         self.head.weight = self.tok_emb.weight  # weight tying
+        self.grad_checkpoint = False  # recompute activations in backward: less memory, ~30% slower
         self.apply(self._init)
 
     @staticmethod
@@ -79,6 +81,9 @@ class GPT(nn.Module):
         x = self.drop(self.tok_emb(idx) + self.pos_emb(torch.arange(offset, offset + idx.shape[1], device=idx.device)))
         cache = []
         for i, block in enumerate(self.blocks):
+            if self.grad_checkpoint and self.training:
+                x = checkpoint(lambda h, b=block: b(h)[0], x, use_reentrant=False)
+                continue
             x, kv = block(x, past[i] if past else None)
             cache.append(kv)
         return self.head(self.ln_f(x)), cache
