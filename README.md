@@ -62,7 +62,7 @@ scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MI
 
 ## Roadmap
 
-- [ ] **0. Setup** — venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
+- [x] **0. Setup** — venv, PyTorch with CUDA on an RTX 5060 (Blackwell needs CUDA 12.8+ builds), FluidSynth.
 - [x] **1. Instruments** — define guitar, bass guitar, alto/tenor sax, piano; render a scale
       and a short phrase on each to verify the engine.
 - [ ] **2. Data** — build the corpus from openly licensed sources (see below), tokenize, split.
