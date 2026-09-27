@@ -25,5 +25,9 @@ save
 log "grace period $GRACE_MIN min for the local mirror to fetch the final checkpoint"
 sleep $(( GRACE_MIN * 60 ))
 save
+# SSH sessions don't inherit the pod's environment; the pod-scoped key lives in PID 1's. It may only
+# stop/remove this pod (reading pod info or SSH keys is "Unauthorized", which config reports harmlessly).
+eval "$(tr '\0' '\n' < /proc/1/environ | grep -E '^RUNPOD_(API_KEY|POD_ID)=' | sed 's/^/export /')"
+runpodctl config --apiKey "$RUNPOD_API_KEY" >/dev/null 2>&1
 log "stopping pod $RUNPOD_POD_ID"
-runpodctl stop pod "$RUNPOD_POD_ID"
+runpodctl stop pod "$RUNPOD_POD_ID"   # tested on a pod: "pod ... stopped", SSH refused right after
