@@ -72,6 +72,9 @@ def main():
             ckpt["thread"].start()
             busy = True
         done = ckpt["final"] and not busy
+        if done:  # tell runpod_finish.sh the final checkpoint is safe here, so the pod can be removed
+            subprocess.run(["ssh", "-p", args.port, *ssh_opts, args.host, f"touch {remote_dir}/fetched_final"],
+                           capture_output=True)
         (local / "sync.json").write_text(json.dumps({
             "host": args.host, "synced_at": time.time() if ok else None,
             "best_step": max(ckpt["step"], 0), "downloading": busy, "final_done": done}))
