@@ -26,7 +26,7 @@ def main():
     ap.add_argument("--remote", default="/root/OrchestraMaker")
     ap.add_argument("--run", default="v1_piano")
     ap.add_argument("--every", type=float, default=30)
-    ap.add_argument("--ckpt-every", type=int, default=5000)
+    ap.add_argument("--ckpt-every", type=int, default=2500)
     args = ap.parse_args()
 
     ssh_opts = ["-i", args.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
@@ -53,6 +53,9 @@ def main():
         step = remote_best_step()
         if step is not None and step > ckpt["step"] and scp("best.pt", local / "best.pt.part"):
             os.replace(local / "best.pt.part", local / "best.pt")
+            snapshots = local / "snapshots"  # keep every downloaded checkpoint, to revisit a step later
+            snapshots.mkdir(exist_ok=True)
+            os.link(local / "best.pt", snapshots / f"step_{step:05d}.pt")
             ckpt["step"] = step
             print(f"downloaded best.pt from step {step}", flush=True)
 
