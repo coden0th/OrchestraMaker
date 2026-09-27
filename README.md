@@ -17,6 +17,16 @@ OrchestraMaker takes the other road, the way a human musician does it:
 The question we want to answer: *can a model that fits on a laptop GPU learn to play
 convincingly this way?*
 
+## Why this exists
+
+This started as a question I was curious about: music AIs mostly synthesize sound directly —
+what happens if a model learns to play instruments instead? OrchestraMaker is my attempt to
+find out without it becoming a big time investment.
+
+It is built with **heavy AI-assisted coding**: most of the code is written together with an
+AI coding assistant, while I steer the ideas, experiments and decisions. Expect a curiosity
+project rather than a polished library.
+
 ## Architecture
 
 ```
@@ -64,8 +74,11 @@ Each dataset keeps its own license — check it before reuse.
 
 ## Hardware target
 
-Developed on a laptop: RTX 5060 Laptop GPU (8 GB VRAM), 32 GB RAM. Everything here should
-train in hours, not weeks.
+- **Development and small runs:** a laptop with an RTX 5060 Laptop GPU (8 GB VRAM) and 32 GB RAM.
+- **Larger training runs:** a rented cloud GPU (e.g. on [RunPod](https://www.runpod.io/)).
+
+Training is config-driven and checkpointed, so the same run can move between the laptop and a
+cloud machine. The goal is training in hours, not weeks.
 
 ## License
 
