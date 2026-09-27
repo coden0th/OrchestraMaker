@@ -77,6 +77,10 @@ class Tokenizer:
                 pitch = None
         return style, instrument, notes
 
+    def time_steps(self) -> np.ndarray:
+        """How far each token moves the clock, in TIME_STEPs (TIME_k -> k, everything else 0)."""
+        return np.array([int(t[5:]) if t.startswith("TIME_") else 0 for t in self.vocab], dtype=np.float32)
+
     def temperatures(self, default: float, pitch: float | None = None) -> np.ndarray:
         """Per-token sampling temperature: `pitch` for PITCH tokens (which notes), `default` for the rest
         (when, how long, how loud)."""

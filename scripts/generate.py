@@ -23,7 +23,7 @@ from orchestramaker.instruments import INSTRUMENTS
 from orchestramaker.metrics import pick_take, reference_windows
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.takes import save_take
-from orchestramaker.tokenizer import Tokenizer
+from orchestramaker.tokenizer import TIME_STEP, Tokenizer
 
 # --all plays the pairings the checkpoint's vocabulary knows.
 PAIRINGS = [("mozart", "piano"), ("bach", "piano"), ("chopin", "piano"), ("beethoven", "piano"),
@@ -67,7 +67,8 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         out, coherence = model.generate(idx, args.tokens, temperature=tokenizer.temperatures(args.temperature, getattr(args, 'pitch_temperature', None)), top_p=args.top_p,
                                         eos=tokenizer.eos, memory=getattr(args, "memory", 0),
-                                        min_p=getattr(args, "min_p", 0.0), return_logprob=True)
+                                        min_p=getattr(args, "min_p", 0.0), return_logprob=True,
+                                        time_steps=tokenizer.time_steps(), min_steps=args.seconds / TIME_STEP)
     takes = [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out]
     notes = takes[0]
     if candidates > 1:  # keep a coherent take whose statistics look like real music of this style

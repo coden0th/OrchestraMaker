@@ -85,12 +85,14 @@ class GPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_p=0.95, eos=None, memory=0, min_p=0.0,
-                 return_logprob=False):
+                 return_logprob=False, time_steps=None, min_steps=0):
         """Sample with a KV cache. idx starts with BOS STYLE INST; when the context is full, restart the
         cache from STYLE INST + the most recent tokens (like the mid-piece windows seen in training).
         memory > 0 also keeps the piece's first `memory` tokens (its opening) in every restarted context,
         so the model can still "hear" the opening theme minutes later.
         temperature may be a float or a per-token tensor (see Tokenizer.temperatures).
+        time_steps (per token, see Tokenizer.time_steps) + min_steps: EOS is not allowed before each row has
+        played that long (pieces in the data are often single movements that end after 1-3 minutes).
         min_p drops tokens whose probability is below min_p x the most likely token's.
         return_logprob also returns each row's mean log-probability of its sampled tokens under the
         untempered model: how much the model itself "believes" what it played (a coherence score)."""
@@ -102,12 +104,17 @@ class GPT(nn.Module):
         logp_sum = torch.zeros(idx.shape[0], device=idx.device)
         count = torch.zeros(idx.shape[0], device=idx.device)
         finished = torch.zeros(idx.shape[0], dtype=torch.bool, device=idx.device)
+        clock = torch.zeros(idx.shape[0], device=idx.device)
+        if time_steps is not None:
+            time_steps = torch.as_tensor(time_steps, device=idx.device)
         for _ in range(max_new_tokens):
             if past is not None and past[0][0].shape[2] + pending.shape[1] > block:
                 recent = block * 3 // 4 - memory
                 pending, past = torch.cat([prefix, idx[:, 3:3 + memory], idx[:, -recent:]], dim=1), None
             logits, past = self._run(pending, past)
             logits = logits[:, -1].float()
+            if eos is not None and time_steps is not None:
+                logits[:, eos] = torch.where(clock < min_steps, float("-inf"), logits[:, eos])
             probs = F.softmax(logits / temperature, dim=-1)
             sorted_p, order = probs.sort(descending=True)
             sorted_p[sorted_p.cumsum(-1) - sorted_p > top_p] = 0  # nucleus sampling
@@ -116,6 +123,8 @@ class GPT(nn.Module):
             chosen = F.log_softmax(logits, dim=-1).gather(-1, nxt).squeeze(1)
             logp_sum += torch.where(finished, 0.0, chosen)
             count += (~finished).float()
+            if time_steps is not None:
+                clock += time_steps[nxt.squeeze(1)]
             if eos is not None:
                 finished |= nxt.squeeze(1) == eos
             idx = torch.cat([idx, nxt], dim=1)
