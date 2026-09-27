@@ -18,7 +18,7 @@
       --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
       --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
       --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
-      --track0: #7aa2f7; --track1: #5fcf9c; --track2: #d58cf0; --chip: #2a2a30;
+      --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --chip: #2a2a30;
     }
   }
   :root[data-theme="dark"] {
@@ -26,7 +26,7 @@
     --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
     --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
     --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
-    --track0: #7aa2f7; --track1: #5fcf9c; --track2: #d58cf0; --chip: #2a2a30;
+    --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --chip: #2a2a30;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -69,6 +69,24 @@
   details li { color: var(--muted); font-size: 13px; }
   .empty { color: var(--muted); max-width: 520px; }
   code { background: var(--chip); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .tile .label { color: var(--muted); font-size: 12px; }
+  .tile .value { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .tile .note { color: var(--muted); font-size: 12px; }
+  .bar { height: 4px; background: var(--chip); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); }
+  .chartbox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+              position: relative; }
+  .chartbox .legend { border-top: 0; padding: 0 0 6px; }
+  .chartbox svg { display: block; width: 100%; height: 320px; overflow: visible; }
+  .chartbox svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+  .chartbox svg text.series { fill: var(--text); font-size: 12px; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.12);
+         white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.vals { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.vals td, table.vals th { padding: 2px 10px 2px 0; text-align: right; }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; }
     aside { position: static; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -84,6 +102,7 @@
       <h1>OrchestraMaker</h1>
       <p>Takes from <code>outputs/</code> · refreshes every 10 s</p>
     </header>
+    <nav id="runs"></nav>
     <nav id="list"></nav>
   </aside>
   <main id="main">
@@ -109,6 +128,17 @@
         <div class="legend" id="legend"></div>
       </div>
       <details id="problems"><summary></summary><ul></ul></details>
+    </div>
+    <div id="runview" hidden>
+      <h2 id="run-title"></h2>
+      <div class="chips" id="run-chips"></div>
+      <div class="tiles" id="run-tiles"></div>
+      <div class="chartbox">
+        <div class="legend" id="run-legend"></div>
+        <svg id="run-chart" role="img" aria-label="Loss by training step"></svg>
+        <div class="tip" id="run-tip" hidden></div>
+      </div>
+      <details><summary>Validation loss table</summary><table class="vals" id="run-table"></table></details>
     </div>
   </main>
 </div>
@@ -160,6 +190,8 @@ async function loadList() {
 
 async function select(url) {
   state.url = url;
+  runState.name = null;
+  $("runview").hidden = true;
   history.replaceState(null, "", "#" + url);
   state.take = await (await fetch(url)).json();
   state.take.dir = url.slice(0, url.lastIndexOf("/") + 1);
@@ -352,7 +384,7 @@ canvas.addEventListener("wheel", e => {
 audio.addEventListener("play", loop);
 audio.addEventListener("seeked", draw);
 audio.addEventListener("pause", draw);
-window.addEventListener("resize", draw);
+window.addEventListener("resize", () => { draw(); if (runState.name) drawRun(); });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 document.addEventListener("keydown", e => {
   if (e.code === "Space" && state.take && e.target.tagName !== "BUTTON") {
@@ -373,9 +405,183 @@ $("zoom").replaceChildren(...[[6, "6 s"], [12, "12 s"], [24, "24 s"], [0, "whole
   return b;
 }));
 
+// ---- Training runs (checkpoints/*/train.log, mirrored from a pod by sync_pod.py) ----
+const runState = { runs: [], name: null };
+const SVG_NS = "http://www.w3.org/2000/svg";
+const k = n => n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(n);
+
+async function loadRuns() {
+  try { runState.runs = await (await fetch("/api/runs")).json(); } catch { return; }
+  const nav = $("runs");
+  nav.replaceChildren();
+  if (runState.runs.length) nav.append(Object.assign(document.createElement("div"),
+    { className: "group", textContent: "training runs" }));
+  for (const r of runState.runs) {
+    const b = document.createElement("button");
+    b.className = "take" + (r.name === runState.name ? " active" : "");
+    b.innerHTML = `<div></div><div class="sub"></div>`;
+    b.firstChild.textContent = r.name;
+    const badge = document.createElement("span");
+    badge.className = "badge " + (r.done ? "ok" : "");
+    badge.textContent = r.done ? "done" : "running";
+    b.firstChild.append(badge);
+    const last = r.train.length ? r.train[r.train.length - 1][0] : 0;
+    b.lastChild.textContent = `step ${last.toLocaleString()} / ${(r.max_steps || 0).toLocaleString()}` +
+      (r.sync ? " · on pod" : "");
+    b.onclick = () => selectRun(r.name);
+    nav.append(b);
+  }
+  if (runState.name) drawRun();
+}
+
+function selectRun(name) {
+  runState.name = name;
+  state.url = null;
+  state.take = null;
+  audio.pause();
+  history.replaceState(null, "", "#run=" + name);
+  $("empty").hidden = true;
+  $("view").hidden = true;
+  $("runview").hidden = false;
+  document.querySelectorAll(".take").forEach(b => b.classList.remove("active"));
+  loadRuns();
+}
+
+function tile(label, value, note, progress) {
+  const d = document.createElement("div");
+  d.className = "tile";
+  d.innerHTML = `<div class="label"></div><div class="value"></div><div class="note"></div>`;
+  d.children[0].textContent = label;
+  d.children[1].textContent = value;
+  d.children[2].textContent = note || "";
+  if (progress != null) d.insertAdjacentHTML("beforeend",
+    `<div class="bar"><div style="width:${Math.min(100, progress * 100).toFixed(1)}%"></div></div>`);
+  return d;
+}
+
+function drawRun() {
+  const r = runState.runs.find(x => x.name === runState.name);
+  if (!r) return;
+  const last = r.train.length ? r.train[r.train.length - 1][0] : 0;
+  const sources = [...new Set(r.val.flatMap(([, v]) => Object.keys(v)))];
+  const means = r.val.map(([s, v]) => [s, Object.values(v).reduce((a, b) => a + b, 0) / Object.values(v).length]);
+  const best = means.reduce((a, b) => (b[1] < a[1] ? b : a), [0, Infinity]);
+
+  $("run-title").textContent = `Training run: ${r.name}`;
+  const chips = [r.params ? `${r.params} parameters` : null,
+    r.sync ? `mirrored from ${r.sync.host}` : "local",
+    r.sync && r.sync.synced_at ? `synced ${Math.round(Date.now() / 1000 - r.sync.synced_at)} s ago` : null,
+    r.sync && r.sync.best_step ? `checkpoint here for listening: step ${r.sync.best_step.toLocaleString()}` : null];
+  $("run-chips").replaceChildren(...chips.filter(Boolean).map(c =>
+    Object.assign(document.createElement("span"), { className: "chip", textContent: c })));
+  $("run-tiles").replaceChildren(
+    tile("Step", last.toLocaleString(), `of ${(r.max_steps || 0).toLocaleString()}`, r.max_steps ? last / r.max_steps : null),
+    tile("Speed", r.rate ? `${Math.round(r.rate / 1000)}k` : "–", "tokens per second"),
+    tile("Time left", r.done ? "done" : r.eta != null ? `${Math.round(r.eta)} min` : "–",
+      r.done ? "" : "estimated from current speed"),
+    tile("Best validation loss", isFinite(best[1]) ? best[1].toFixed(3) : "–",
+      isFinite(best[1]) ? `mean of ${sources.join(" + ")} at step ${best[0].toLocaleString()}` : "after the first evaluation"));
+
+  // Series in fixed order: train, then validation sources in log order. Colour follows the series.
+  const series = [{ name: "train", points: r.train, markers: false },
+    ...sources.map(src => ({ name: `val ${src}`, markers: true,
+      points: r.val.filter(([, v]) => src in v).map(([s, v]) => [s, v[src]]) }))];
+  series.forEach((s, i) => s.color = `var(--track${i})`);
+  $("run-legend").innerHTML = series.map(s =>
+    `<span><span class="sw" style="background:${s.color}"></span>${s.name}</span>`).join("") +
+    `<span>lower is better · hover for values</span>`;
+  lineChart($("run-chart"), series, r.max_steps || last || 1);
+
+  $("run-table").innerHTML = `<tr><th>step</th>${sources.map(s => `<th>${s}</th>`).join("")}<th>mean</th></tr>` +
+    r.val.map(([s, v], i) => `<tr><td>${s.toLocaleString()}</td>${sources.map(src =>
+      `<td>${v[src] != null ? v[src].toFixed(3) : ""}</td>`).join("")}<td>${means[i][1].toFixed(3)}</td></tr>`).join("");
+}
+
+function lineChart(svg, series, xMax) {
+  const W = svg.clientWidth || 800, H = 320, m = { l: 40, r: 118, t: 10, b: 24 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  // y range: every validation point, but skip the first 10% of logged training steps - the initial
+  // loss spike would flatten everything else.
+  const lastX = Math.max(0, ...series.flatMap(s => s.points.map(([x]) => x)));
+  const ys = series.flatMap(s => s.points.filter(([x]) => s.markers || x >= lastX * 0.1).map(([, y]) => y));
+  const all = series.flatMap(s => s.points.map(([, y]) => y));
+  let lo = Math.min(...(ys.length ? ys : all)), hi = Math.max(...(ys.length ? ys : all));
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  const pad = Math.max(0.02, (hi - lo) * 0.08);
+  lo -= pad; hi += pad;
+  const X = x => m.l + x / xMax * pw, Y = y => m.t + (hi - y) / (hi - lo) * ph;
+  const el = (tag, attrs, text) => {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const [a, v] of Object.entries(attrs)) e.setAttribute(a, v);
+    if (text != null) e.textContent = text;
+    return e;
+  };
+  svg.replaceChildren();
+  const clip = el("clipPath", { id: "plot-clip" });
+  clip.append(el("rect", { x: m.l, y: m.t, width: pw, height: ph }));
+  svg.append(clip);
+  const step = [0.05, 0.1, 0.2, 0.25, 0.5, 1].find(s => (hi - lo) / s <= 6) || 1;
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1 }));
+    svg.append(el("text", { x: m.l - 6, y: Y(v) + 4, "text-anchor": "end" }, v.toFixed(2)));
+  }
+  for (let i = 0; i <= 4; i++) {
+    const x = Math.round(xMax * i / 4);
+    svg.append(el("text", { x: X(x), y: H - 6, "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle" }, k(x)));
+  }
+  svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: "var(--octave)" }));
+  const plot = el("g", { "clip-path": "url(#plot-clip)" });
+  svg.append(plot);
+  const labels = [];
+  for (const s of series) {
+    if (!s.points.length) continue;
+    plot.append(el("polyline", { points: s.points.map(([x, y]) => `${X(x)},${Y(y)}`).join(" "), fill: "none",
+      stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    if (s.markers) for (const [x, y] of s.points)
+      plot.append(el("circle", { cx: X(x), cy: Y(y), r: 4, fill: s.color, stroke: "var(--panel)", "stroke-width": 2 }));
+    const [lx, ly] = s.points[s.points.length - 1];
+    labels.push({ s, x: X(lx), y: Math.min(m.t + ph, Math.max(m.t, Y(ly))) });
+  }
+  // Direct labels at the line ends, nudged apart so they never overlap.
+  labels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 15);
+  for (const l of labels) {
+    svg.append(el("circle", { cx: m.l + pw + 10, cy: l.y, r: 4, fill: l.s.color }));
+    svg.append(el("text", { x: m.l + pw + 18, y: l.y + 4, class: "series" }, l.s.name));
+  }
+
+  // Hover: crosshair at the nearest logged step + tooltip with every series' value there.
+  const cross = el("line", { y1: m.t, y2: m.t + ph, stroke: "var(--muted)", "stroke-dasharray": "3 3", visibility: "hidden" });
+  const hit = el("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent" });
+  svg.append(cross, hit);
+  const tip = $("run-tip"), steps = [...new Set(series.flatMap(s => s.points.map(([x]) => x)))].sort((a, b) => a - b);
+  hit.onmousemove = e => {
+    const rect = svg.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (W / rect.width);
+    const target = (x - m.l) / pw * xMax;
+    const at = steps.reduce((a, b) => Math.abs(b - target) < Math.abs(a - target) ? b : a, steps[0]);
+    if (at == null) return;
+    cross.setAttribute("x1", X(at)); cross.setAttribute("x2", X(at)); cross.setAttribute("visibility", "visible");
+    const rows = series.map(s => {
+      const p = s.points.filter(([px]) => px <= at).pop();
+      return p ? `<div><span class="sw" style="background:${s.color}"></span>${s.name}: ${p[1].toFixed(3)}` +
+        `${p[0] !== at ? ` <span class="sub">(step ${p[0].toLocaleString()})</span>` : ""}</div>` : "";
+    }).join("");
+    tip.innerHTML = `<div><b>step ${at.toLocaleString()}</b></div>${rows}`;
+    tip.hidden = false;
+    const left = X(at) / W * rect.width + 12;
+    tip.style.left = `${Math.min(left, rect.width - tip.offsetWidth)}px`;
+    tip.style.top = "36px";
+  };
+  hit.onmouseleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
+}
+
 loadList();
-setInterval(loadList, 10000);
-if (location.hash.length > 1) select(decodeURIComponent(location.hash.slice(1)));
+loadRuns();
+setInterval(() => { loadList(); loadRuns(); }, 10000);
+if (location.hash.startsWith("#run=")) selectRun(decodeURIComponent(location.hash.slice(5)));
+else if (location.hash.length > 1) select(decodeURIComponent(location.hash.slice(1)));
 </script>
 </body>
 </html>

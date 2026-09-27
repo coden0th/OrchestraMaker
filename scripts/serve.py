@@ -35,14 +35,49 @@ def list_takes():
     return sorted(takes, key=lambda t: (t["group"], t["name"]))
 
 
+def parse_run(run_dir: Path) -> dict:
+    """Training curve and status from a run's train.log (local, or mirrored by sync_pod.py)."""
+    run = {"name": run_dir.name, "train": [], "val": [], "rate": None, "eta": None, "done": False, "params": None}
+    step = 0
+    for line in (run_dir / "train.log").read_text(errors="ignore").splitlines():
+        parts = line.split()
+        if line.startswith("step ") and len(parts) >= 10:
+            step = int(parts[1])
+            run["train"].append([step, float(parts[3])])
+            run["rate"], run["eta"] = float(parts[6].rstrip("k")) * 1000, float(parts[9])
+        elif line.startswith("  val "):
+            values = dict(zip(parts[1:-2:2], map(float, parts[2:-2:2])))
+            run["val"].append([step, values])
+        elif line.startswith("model: "):
+            run["params"] = parts[1]
+        elif line.startswith("done in"):
+            run["done"] = True
+    config = run_dir / "config.json"
+    run["max_steps"] = json.loads(config.read_text())["max_steps"] if config.exists() else None
+    sync = run_dir / "sync.json"
+    run["sync"] = json.loads(sync.read_text()) if sync.exists() else None
+    run["updated"] = (run_dir / "train.log").stat().st_mtime
+    return run
+
+
+def list_runs():
+    runs = []
+    for log in sorted((ROOT / "checkpoints").glob("*/train.log")):
+        try:
+            runs.append(parse_run(log.parent))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return sorted(runs, key=lambda r: -r["updated"])
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self.send_response(302)
             self.send_header("Location", "/webui/")
             self.end_headers()
-        elif self.path.split("?")[0] == "/api/takes":
-            body = json.dumps(list_takes()).encode()
+        elif self.path.split("?")[0] in ("/api/takes", "/api/runs"):
+            body = json.dumps(list_takes() if self.path.startswith("/api/takes") else list_runs()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

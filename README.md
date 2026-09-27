@@ -73,6 +73,14 @@ scripts/get_soundfont.sh                        # ~215 MB, MuseScore General (MI
 .venv/bin/python scripts/watch_progress.py --run checkpoints/base  # optional: takes from each new checkpoint
 ```
 
+Training on a rented GPU? Mirror it to the same UI (loss curve, speed, time left, and takes from
+checkpoints as they arrive):
+
+```bash
+.venv/bin/python scripts/sync_pod.py --host root@<pod-ip> --port <ssh-port> --run v1_piano
+.venv/bin/python scripts/watch_progress.py --run checkpoints/v1_piano --every 1
+```
+
 Every take (hand-written demos, dataset round trips, model generations) shows up with its audio and a
 piano roll: the keys light up as notes sound, notes outside the instrument's range are red, and model
 takes can be switched between *as generated* and *made playable*.
