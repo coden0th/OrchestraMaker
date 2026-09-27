@@ -137,6 +137,30 @@ def pijama_pianist(path: Path) -> str:
     return path.parent.parent.name
 
 
+def aria_midi_files(archive: Path, genres: tuple[str, ...], min_score: float) -> list[tuple[Path, dict]]:
+    """Aria-MIDI (CC BY-NC-SA 4.0) files of the given genres whose audio-quality score is >= min_score,
+    extracted once from the deduped tarball next to it. Returns (path, metadata) pairs."""
+    import json
+    import tarfile
+    out = archive.parent / f"extracted_{'_'.join(genres)}"
+    meta_path = out / "metadata.json"
+    if not meta_path.exists():
+        out.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "r:gz") as tar:
+            wanted = None
+            for member in tar:  # streaming: metadata.json comes before data/
+                name = Path(member.name).name
+                if name == "metadata.json":
+                    meta = json.load(tar.extractfile(member))
+                    wanted = {k for k, v in meta.items() if v["metadata"].get("genre") in genres
+                              and np.mean(list(v.get("audio_scores", {"0": 0}).values())) >= min_score}
+                elif name.endswith(".mid") and wanted is not None and str(int(name.split("_")[0])) in wanted:
+                    (out / name).write_bytes(tar.extractfile(member).read())
+        meta_path.write_text(json.dumps({k: meta[k] for k in wanted}))
+    meta = json.loads(meta_path.read_text())
+    return [(p, meta[str(int(p.name.split("_")[0]))]["metadata"]) for p in sorted(out.glob("*.mid"))]
+
+
 def apply_sustain_pedal(track) -> list[Note]:
     """Hold notes released under the sustain pedal until the pedal lifts (or the key is struck again)."""
     n = track.notes.numpy()

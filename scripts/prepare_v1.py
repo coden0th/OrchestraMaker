@@ -24,8 +24,8 @@ sys.path.insert(0, str(ROOT))
 
 import symusic  # noqa: E402
 
-from orchestramaker.datasets import (pianocore_row_groups, pianocore_rows, pijama_files, pijama_pianist,  # noqa: E402
-                                     score_notes, slugify)
+from orchestramaker.datasets import (aria_midi_files, pianocore_row_groups, pianocore_rows,  # noqa: E402
+                                     pijama_files, pijama_pianist, score_notes, slugify)
 from orchestramaker.tokenizer import Tokenizer  # noqa: E402
 
 TOKENIZER: Tokenizer | None = None
@@ -66,7 +66,23 @@ def metadata(args):
         styles[f"pijama:{pianist}"] = f"jazz_{slugify(pianist)}" if h >= args.jazz_min_hours else "jazz_piano"
     print(f"PianoCoRe tier B: {sum(hours.values()):,.0f} h, {len(hours)} composers in {len(groups)} row groups; "
           f"PiJAMA: {sum(jazz_hours.values()):,.0f} h, {len(jazz_hours)} pianists")
-    return styles, groups, files
+
+    aria = []
+    if args.aria_midi:
+        # Aria-MIDI performers are surnames only; reuse a PiJAMA pianist style when the surname is unambiguous.
+        by_surname = {}
+        for pianist, style in ((k[7:], v) for k, v in styles.items() if k.startswith("pijama:") and v != "jazz_piano"):
+            by_surname.setdefault(slugify(pianist).split("_")[-1], set()).add(style)
+        genres = tuple(args.aria_genres.split(","))
+        for path, md in aria_midi_files(args.aria_midi, genres, args.aria_min_score):
+            if md["genre"] != "jazz":
+                style = md["genre"]                                   # ragtime, blues
+            else:
+                match = by_surname.get(slugify(md.get("performer") or ""), set())
+                style = match.pop() if len(match) == 1 else "jazz_piano"
+            aria.append((path, style, md))
+        print(f"Aria-MIDI {'/'.join(genres)}: {len(aria)} files (audio score >= {args.aria_min_score})")
+    return styles, groups, files, aria
 
 
 def init_worker(tokenizer, style_of):
@@ -108,24 +124,41 @@ def tokenize_pijama(path):
     return [("pijama", style, split, f"{pijama_pianist(path)} - {path.stem}", ids)]
 
 
+def tokenize_aria(item):
+    path, style, md = item
+    notes = score_notes(symusic.Score(str(path), ttype="second"))
+    if len(notes) < 32:
+        return []
+    ids, style = encode(notes, style)
+    split = "validation" if zlib.crc32(path.name.encode()) % 20 == 0 else "train"
+    who = md.get("performer") or md.get("composer") or ""
+    return [("aria_jazz", style, split, f"Aria-MIDI {md['genre']} {who} {path.stem}".replace("  ", " "), ids)]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pianocore", type=Path, default=ROOT / "data/raw/pianocore_hf")
     ap.add_argument("--pijama", type=Path, default=ROOT / "data/raw/pijama")
     ap.add_argument("--out", type=Path, default=ROOT / "data/tokens_v1")
     ap.add_argument("--vocab", type=Path)
+    ap.add_argument("--compact", action="store_true", help="NOTE_p_v tokens: ~2.9 instead of ~3.9 tokens per note")
     ap.add_argument("--min-hours", type=float, default=20)
     ap.add_argument("--jazz-min-hours", type=float, default=3)
     ap.add_argument("--workers", type=int, default=len(os.sched_getaffinity(0)))
+    ap.add_argument("--aria-midi", type=Path, help="aria-midi-v1-deduped-ext.tar.gz, for more jazz")
+    ap.add_argument("--aria-genres", default="jazz,ragtime,blues")
+    ap.add_argument("--aria-min-score", type=float, default=0.95)
     args = ap.parse_args()
     if args.vocab:  # the vocabulary decides the styles: map every pianist, encode() folds unknown ones
         args.jazz_min_hours = 0
 
-    style_of, groups, files = metadata(args)
+    style_of, groups, files, aria = metadata(args)
     if args.vocab:
         tokenizer = Tokenizer.load(args.vocab)
     else:
-        tokenizer = Tokenizer(sorted(set(style_of.values()) | {"classical_other", "jazz_piano"}), ["piano"])
+        styles = set(style_of.values()) | {s for _, s, _ in aria} | {"classical_other", "jazz_piano"}
+        tokenizer = Tokenizer(sorted(styles), ["piano"],
+                              compact=args.compact)
     args.out.mkdir(parents=True, exist_ok=True)
     tokenizer.save(args.out / "vocab.json")
     print(f"{len(tokenizer.styles)} styles, vocab {len(tokenizer)}; tokenizing with {args.workers} workers")
@@ -134,7 +167,8 @@ def main():
     offset, done = 0, 0
     with open(args.out / "tokens.bin", "wb") as f, \
             Pool(args.workers, initializer=init_worker, initargs=(tokenizer, style_of)) as pool:
-        jobs = [(tokenize_row_group, g) for g in groups] + [(tokenize_pijama, p) for p in files]
+        jobs = ([(tokenize_row_group, g) for g in groups] + [(tokenize_pijama, p) for p in files]
+                + [(tokenize_aria, a) for a in aria])
         for results in pool.imap_unordered(run_job, jobs, chunksize=1):
             for source, style, split, title, ids in results:
                 f.write(ids.tobytes())

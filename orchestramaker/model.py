@@ -1,4 +1,8 @@
-"""A small GPT-style decoder (nanoGPT-like) over note tokens."""
+"""A small decoder-only transformer over note tokens.
+
+arch="gpt2" (v0, v1): learned positions, LayerNorm, GELU MLP.
+arch="llama" (v1.5+): rotary positions (RoPE), RMSNorm, SwiGLU MLP, no biases.
+"""
 
 from dataclasses import asdict, dataclass
 
@@ -16,6 +20,9 @@ class GPTConfig:
     n_head: int = 8
     n_embd: int = 512
     dropout: float = 0.1
+    arch: str = "gpt2"
+    mlp_hidden: int | None = None  # llama: SwiGLU width (default ~8/3 * n_embd, rounded to 64)
+    rope_base: float = 10000.0
 
     def to_dict(self):
         return asdict(self)
@@ -32,7 +39,7 @@ class Block(nn.Module):
                                  nn.Linear(4 * c.n_embd, c.n_embd), nn.Dropout(c.dropout))
         self.drop = nn.Dropout(c.dropout)
 
-    def forward(self, x, past=None):
+    def forward(self, x, past=None, pos=None):
         """past: this layer's cached (keys, values) when decoding one token at a time."""
         B, T, C = x.shape
         q, k, v = (t.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
@@ -45,15 +52,63 @@ class Block(nn.Module):
         return x + self.mlp(self.ln2(x)), (k, v)
 
 
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps, self.weight = eps, nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps).to(x.dtype) * self.weight
+
+
+def rotate(x, pos, base):
+    """Rotary position embedding: rotate each (first half, second half) pair of channels by an angle
+    proportional to the position, so attention scores depend on relative distance."""
+    half = x.shape[-1] // 2
+    freqs = base ** (-torch.arange(half, device=x.device, dtype=torch.float32) / half)
+    angles = pos.float()[:, None] * freqs[None]                     # (T, half)
+    cos, sin = angles.cos().to(x.dtype), angles.sin().to(x.dtype)
+    x1, x2 = x[..., :half], x[..., half:]
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+
+
+class LlamaBlock(nn.Module):
+    def __init__(self, c: GPTConfig):
+        super().__init__()
+        self.n_head, self.dropout, self.base = c.n_head, c.dropout, c.rope_base
+        hidden = c.mlp_hidden or 64 * round(8 * c.n_embd / 3 / 64)
+        self.ln1, self.ln2 = RMSNorm(c.n_embd), RMSNorm(c.n_embd)
+        self.qkv = nn.Linear(c.n_embd, 3 * c.n_embd, bias=False)
+        self.proj = nn.Linear(c.n_embd, c.n_embd, bias=False)
+        self.gate = nn.Linear(c.n_embd, hidden, bias=False)
+        self.up = nn.Linear(c.n_embd, hidden, bias=False)
+        self.down = nn.Linear(hidden, c.n_embd, bias=False)
+        self.drop = nn.Dropout(c.dropout)
+
+    def forward(self, x, past=None, pos=None):
+        B, T, C = x.shape
+        q, k, v = (t.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+                   for t in self.qkv(self.ln1(x)).split(C, dim=2))
+        q, k = rotate(q, pos, self.base), rotate(k, pos, self.base)   # cached keys are already rotated
+        if past is not None:
+            k, v = torch.cat([past[0], k], dim=2), torch.cat([past[1], v], dim=2)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=past is None,
+                                           dropout_p=self.dropout if self.training else 0.0)
+        x = x + self.drop(self.proj(y.transpose(1, 2).reshape(B, T, C)))
+        h = self.ln2(x)
+        return x + self.drop(self.down(F.silu(self.gate(h)) * self.up(h))), (k, v)
+
+
 class GPT(nn.Module):
     def __init__(self, c: GPTConfig):
         super().__init__()
         self.config = c
+        llama = c.arch == "llama"
         self.tok_emb = nn.Embedding(c.vocab_size, c.n_embd)
-        self.pos_emb = nn.Embedding(c.block_size, c.n_embd)
+        self.pos_emb = None if llama else nn.Embedding(c.block_size, c.n_embd)
         self.drop = nn.Dropout(c.dropout)
-        self.blocks = nn.ModuleList(Block(c) for _ in range(c.n_layer))
-        self.ln_f = nn.LayerNorm(c.n_embd)
+        self.blocks = nn.ModuleList((LlamaBlock if llama else Block)(c) for _ in range(c.n_layer))
+        self.ln_f = RMSNorm(c.n_embd) if llama else nn.LayerNorm(c.n_embd)
         self.head = nn.Linear(c.n_embd, c.vocab_size, bias=False)
         self.head.weight = self.tok_emb.weight  # weight tying
         self.grad_checkpoint = False  # recompute activations in backward: less memory, ~30% slower
@@ -67,7 +122,7 @@ class GPT(nn.Module):
             nn.init.zeros_(m.bias)
 
     def num_params(self):
-        return sum(p.numel() for p in self.parameters()) - self.pos_emb.weight.numel()
+        return sum(p.numel() for p in self.parameters()) - (self.pos_emb.weight.numel() if self.pos_emb else 0)
 
     def forward(self, idx, targets=None, ignore_index=0):
         logits, _ = self._run(idx)
@@ -78,13 +133,15 @@ class GPT(nn.Module):
 
     def _run(self, idx, past=None):
         offset = past[0][0].shape[2] if past else 0
-        x = self.drop(self.tok_emb(idx) + self.pos_emb(torch.arange(offset, offset + idx.shape[1], device=idx.device)))
+        pos = torch.arange(offset, offset + idx.shape[1], device=idx.device)
+        x = self.tok_emb(idx) + (self.pos_emb(pos) if self.pos_emb is not None else 0)
+        x = self.drop(x)
         cache = []
         for i, block in enumerate(self.blocks):
             if self.grad_checkpoint and self.training:
-                x = checkpoint(lambda h, b=block: b(h)[0], x, use_reentrant=False)
+                x = checkpoint(lambda h, b=block: b(h, None, pos)[0], x, use_reentrant=False)
                 continue
-            x, kv = block(x, past[i] if past else None)
+            x, kv = block(x, past[i] if past else None, pos)
             cache.append(kv)
         return self.head(self.ln_f(x)), cache
 

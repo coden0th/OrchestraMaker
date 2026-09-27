@@ -47,13 +47,13 @@ def main():
     generated = np.unique(sequence_hashes([n[0] for n in sorted(notes, key=lambda n: (n[1], n[0]))], args.n))
 
     tokenizer = Tokenizer.load(data / "vocab.json")
-    lo, hi = tokenizer.pitch0, tokenizer.pitch0 + 128
     found, results = np.zeros(len(generated), dtype=bool), []
     for piece in load_pieces(data):
         if piece["style"] != style or piece["split"] != "train":
             continue
         ids = np.asarray(piece["tokens"]).astype(np.int64)
-        hit = np.isin(generated, sequence_hashes(ids[(ids >= lo) & (ids < hi)] - lo, args.n))
+        pitches = tokenizer.pitch_of[ids]
+        hit = np.isin(generated, sequence_hashes(pitches[pitches >= 0], args.n))
         found |= hit
         results.append((hit.mean(), piece["title"]))
     results.sort(reverse=True)

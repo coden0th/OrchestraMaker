@@ -43,8 +43,9 @@ def init_weights(model, checkpoint, device):
     """Start from a trained model. A longer context gets the learned position embeddings stretched
     (linear interpolation: position i of the new context borrows from position i * old / new)."""
     state = torch.load(checkpoint, map_location=device, weights_only=False)["model"]
-    old, new = state["pos_emb.weight"], model.pos_emb.weight
-    if old.shape[0] != new.shape[0]:
+    old = state.get("pos_emb.weight")
+    new = model.pos_emb.weight if model.pos_emb is not None else None
+    if old is not None and new is not None and old.shape[0] != new.shape[0]:
         state["pos_emb.weight"] = torch.nn.functional.interpolate(
             old.T[None], size=new.shape[0], mode="linear", align_corners=True)[0].T
         print(f"stretched position embeddings {old.shape[0]} -> {new.shape[0]}")
@@ -61,19 +62,24 @@ def lr_at(step, cfg):
 
 @torch.no_grad()
 def evaluate(model, sampler, cfg, device):
-    """Validation loss per source, on the same windows every time."""
+    """Validation loss per source on the same windows every time: per token, and in bits per note
+    (comparable across tokenizers that spend a different number of tokens on a note)."""
     model.eval()
-    losses = {}
+    losses, bits = {}, {}
+    is_note_end = torch.as_tensor(sampler.tok.is_note_end, device=device)
+    batches = cfg["eval_batches"] * cfg.get("grad_accum", 1)
     for source in sampler.sources:
         sampler.rng = np.random.default_rng(1234)
-        total = 0.0
-        for _ in range(cfg["eval_batches"]):
-            x, y = sampler.batch(cfg["batch_size"], source=source, device=device)
+        total, nats, tokens, notes = 0.0, 0.0, 0, 0
+        for _ in range(batches):
+            x, y = sampler.batch(cfg["batch_size"] // cfg.get("grad_accum", 1), source=source, device=device)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                total += model(x, y)[1].item()
-        losses[source] = total / cfg["eval_batches"]
+                loss = model(x, y)[1].item()
+            n = int((y != sampler.tok.pad).sum())
+            total, nats, tokens, notes = total + loss, nats + loss * n, tokens + n, notes + int(is_note_end[y].sum())
+        losses[source], bits[source] = total / batches, nats / max(notes, 1) / math.log(2)
     model.train()
-    return losses
+    return losses, bits
 
 
 def main():
@@ -121,7 +127,7 @@ def main():
 
     def save(name, val_losses, with_optimizer):
         ckpt = {"model": model.state_dict(), "model_config": model_cfg.to_dict(),
-                "vocab": {"styles": tokenizer.styles, "instruments": tokenizer.instruments},
+                "vocab": tokenizer.config(),
                 "config": cfg, "step": step, "best_val": best, "val": val_losses}
         if with_optimizer:
             ckpt["optimizer"] = opt.state_dict()
@@ -152,9 +158,10 @@ def main():
                   f"{rate / 1e3:.0f}k tok/s  eta {eta:.0f} min", flush=True)
             log_t0 = time.time()
         if step % cfg["eval_every"] == 0 or step == cfg["max_steps"]:
-            losses = evaluate(model, val, cfg, device)
+            losses, bits = evaluate(model, val, cfg, device)
             mean = sum(losses.values()) / len(losses)
             print(f"  val {'  '.join(f'{k} {v:.3f}' for k, v in losses.items())}  (mean {mean:.3f})", flush=True)
+            print(f"  bits/note {'  '.join(f'{k} {v:.2f}' for k, v in bits.items())}", flush=True)
             if mean < best:
                 best = mean
                 save("best.pt", losses, with_optimizer=False)  # small: for listening / downloading

@@ -38,9 +38,7 @@ class BatchSampler:
                 self.piece_cdf[source] = np.cumsum(lengths) / lengths.sum()  # longer pieces get more windows
         w = np.array([source_weights[s] for s in self.sources], dtype=float)
         self.source_probs = w / w.sum()
-        vocab = tokenizer.vocab
-        self.is_group_start = np.array([t.startswith(("TIME_", "PITCH_")) for t in vocab])
-        self.is_pitch = np.array([t.startswith("PITCH_") for t in vocab])
+        self.is_group_start = tokenizer.is_group_start
 
     def batch(self, batch_size: int, source: str | None = None, device="cpu"):
         rows = np.stack([self._window(source) for _ in range(batch_size)])
@@ -66,7 +64,8 @@ class BatchSampler:
         return np.pad(seq, (0, n - len(seq)), constant_values=self.tok.pad)
 
     def _transpose(self, seq, instrument):
-        pitches = seq[self.is_pitch[seq]] - self.tok.pitch0
+        pitches = self.tok.pitch_of[seq]
+        pitches = pitches[pitches >= 0]
         if not len(pitches):
             return seq
         inst = INSTRUMENTS[instrument]
