@@ -26,9 +26,9 @@ def generate_batch(model, tokenizer, style, instrument, args, device):
     idx = torch.tensor([[tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]],
                        device=device).repeat(args.count, 1)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-        out = model.generate(idx, args.tokens, temperature=args.temperature, top_p=args.top_p,
-                             )
-    return [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out]
+        out, coherence = model.generate(idx, args.tokens, temperature=tokenizer.temperatures(args.temperature, getattr(args, 'pitch_temperature', None)), top_p=args.top_p,
+                                        min_p=args.min_p, return_logprob=True)
+    return [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out], coherence
 
 
 def main():
@@ -39,8 +39,10 @@ def main():
     ap.add_argument("--count", type=int, default=16)
     ap.add_argument("--seconds", type=float, default=45)
     ap.add_argument("--tokens", type=int, default=2400)
-    ap.add_argument("--temperature", type=float, default=1.0)
-    ap.add_argument("--top_p", type=float, default=0.95)
+    ap.add_argument("--temperature", type=float, default=1.1)
+    ap.add_argument("--top_p", type=float, default=1.0)
+    ap.add_argument("--min_p", type=float, default=0.0, help="note: made Chopin takes go silent")
+    ap.add_argument("--pitch_temperature", type=float, help="separate temperature for which notes to play")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--label", default="baseline")
     ap.add_argument("--ref", choices=["openings", "random"], default="openings",
@@ -52,7 +54,7 @@ def main():
     model, tokenizer, info = load(ROOT / args.checkpoint, device)
     ref = reference_windows(load_pieces(ROOT / info["data"]), tokenizer, args.style, args.seconds, 60,
                             from_start=args.ref == "openings")
-    takes = generate_batch(model, tokenizer, args.style, args.instrument, args, device)
+    takes, coherence = generate_batch(model, tokenizer, args.style, args.instrument, args, device)
 
     out_dir = ROOT / "outputs/eval" / f"{args.style}_{args.label}"
     rows, classes = [], []
@@ -66,7 +68,8 @@ def main():
         rows.append(stats)
         meta = {"title": f"{args.style} #{i + 1} ({cls})", "style": args.style, "instrument": args.instrument,
                 **info, **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in stats.items()},
-                "temperature": args.temperature, "top_p": args.top_p}
+                "temperature": args.temperature, "top_p": args.top_p, "min_p": args.min_p,
+                "coherence": round(coherence[i], 3)}
         save_take(out_dir, f"{i + 1:02d}_{cls}", [("as generated", [(INSTRUMENTS[args.instrument], notes)])], meta)
 
     print(f"\n{args.style}, {args.label}: {len(takes)} takes of {args.seconds:.0f}s vs {len(ref)} real {args.ref}")
@@ -75,6 +78,7 @@ def main():
         real = [r[k] for r in ref]
         lo, hi = np.percentile(real, [10, 90])
         print(f"{k:18s} {np.median([r[k] for r in rows]):12.2f} {np.median(real):12.2f} {lo:8.2f} – {hi:5.2f}")
+    print(f"{'coherence':18s} {np.median(coherence):12.2f}   (mean log-prob per token; higher = more self-consistent)")
     counts = {c: classes.count(c) for c in ("typical", "sparse", "repetitive", "empty") if c in classes}
     print("takes:", ", ".join(f"{c} {n}" for c, n in counts.items()), f"-> {out_dir.relative_to(ROOT)}")
 

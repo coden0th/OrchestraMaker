@@ -84,22 +84,42 @@ class GPT(nn.Module):
         return self.head(self.ln_f(x)), cache
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_p=0.95, eos=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_p=0.95, eos=None, memory=0, min_p=0.0,
+                 return_logprob=False):
         """Sample with a KV cache. idx starts with BOS STYLE INST; when the context is full, restart the
-        cache from STYLE INST + the most recent tokens (like the mid-piece windows seen in training)."""
+        cache from STYLE INST + the most recent tokens (like the mid-piece windows seen in training).
+        memory > 0 also keeps the piece's first `memory` tokens (its opening) in every restarted context,
+        so the model can still "hear" the opening theme minutes later.
+        temperature may be a float or a per-token tensor (see Tokenizer.temperatures).
+        min_p drops tokens whose probability is below min_p x the most likely token's.
+        return_logprob also returns each row's mean log-probability of its sampled tokens under the
+        untempered model: how much the model itself "believes" what it played (a coherence score)."""
         block = self.config.block_size
         prefix = idx[:, 1:3]
+        if not isinstance(temperature, (int, float)):
+            temperature = torch.as_tensor(temperature, device=idx.device)
         pending, past = idx[:, -block:], None
+        logp_sum = torch.zeros(idx.shape[0], device=idx.device)
+        count = torch.zeros(idx.shape[0], device=idx.device)
+        finished = torch.zeros(idx.shape[0], dtype=torch.bool, device=idx.device)
         for _ in range(max_new_tokens):
             if past is not None and past[0][0].shape[2] + pending.shape[1] > block:
-                pending, past = torch.cat([prefix, idx[:, -(block * 3 // 4):]], dim=1), None
+                recent = block * 3 // 4 - memory
+                pending, past = torch.cat([prefix, idx[:, 3:3 + memory], idx[:, -recent:]], dim=1), None
             logits, past = self._run(pending, past)
-            probs = F.softmax(logits[:, -1].float() / temperature, dim=-1)
+            logits = logits[:, -1].float()
+            probs = F.softmax(logits / temperature, dim=-1)
             sorted_p, order = probs.sort(descending=True)
             sorted_p[sorted_p.cumsum(-1) - sorted_p > top_p] = 0  # nucleus sampling
+            sorted_p[sorted_p < min_p * sorted_p[:, :1]] = 0
             nxt = order.gather(-1, torch.multinomial(sorted_p, 1))
+            chosen = F.log_softmax(logits, dim=-1).gather(-1, nxt).squeeze(1)
+            logp_sum += torch.where(finished, 0.0, chosen)
+            count += (~finished).float()
+            if eos is not None:
+                finished |= nxt.squeeze(1) == eos
             idx = torch.cat([idx, nxt], dim=1)
             pending = nxt
-            if eos is not None and (nxt == eos).all():
+            if eos is not None and finished.all():
                 break
-        return idx
+        return (idx, (logp_sum / count.clamp(min=1)).tolist()) if return_logprob else idx

@@ -77,6 +77,14 @@ class Tokenizer:
                 pitch = None
         return style, instrument, notes
 
+    def temperatures(self, default: float, pitch: float | None = None) -> np.ndarray:
+        """Per-token sampling temperature: `pitch` for PITCH tokens (which notes), `default` for the rest
+        (when, how long, how loud)."""
+        t = np.full(len(self.vocab), default, dtype=np.float32)
+        if pitch is not None:
+            t[self.pitch0:self.pitch0 + 128] = pitch
+        return t
+
     def transpose(self, ids: np.ndarray, semitones: int) -> np.ndarray:
         ids = ids.copy()
         pitches = (ids >= self.pitch0) & (ids < self.pitch0 + 128)

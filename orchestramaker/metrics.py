@@ -47,21 +47,20 @@ def classify(stats: dict, ref: list[dict]) -> str:
     return "typical"
 
 
-def most_typical(takes: list[list[Note]], ref: list[dict]) -> tuple[int, str]:
-    """Index of the take closest to real music (distance to the real medians in units of the 10-90% spread),
-    preferring takes classified as typical."""
-    med = {k: np.median([r[k] for r in ref]) for k in KEYS}
-    spread = {k: np.subtract(*np.percentile([r[k] for r in ref], [90, 10])) + 1e-6 for k in KEYS}
+def pick_take(takes: list[list[Note]], ref: list[dict], coherence: list[float]) -> tuple[int, str]:
+    """Among takes whose statistics look like real music of the style (not sparse, not looping), the one the
+    model found most coherent (highest mean log-probability). Falls back to all takes if none is typical."""
     scored = []
     for i, notes in enumerate(takes):
         stats = describe(notes)
         if stats:
             cls = classify(stats, ref)
-            scored.append((cls != "typical", sum(abs(stats[k] - med[k]) / spread[k] for k in KEYS), i, cls))
+            scored.append((cls != "typical", -coherence[i], i, cls))
     if not scored:
         return 0, "empty"
-    _, _, i, cls = min(scored)
-    return i, f"{cls}, best of {len(takes)} ({sum(c == 'typical' for *_, c in scored)} typical)"
+    _, neg_coherence, i, cls = min(scored)
+    typical = sum(c == "typical" for *_, c in scored)
+    return i, f"{cls}, most coherent of {len(takes)} ({typical} typical), log-prob {-neg_coherence:.2f}"
 
 
 def reference_windows(pieces: list[dict], tokenizer, style: str, seconds: float, count: int, seed: int = 0,
@@ -85,3 +84,28 @@ def reference_windows(pieces: list[dict], tokenizer, style: str, seconds: float,
         if len(out) == count:
             break
     return out
+
+
+def top_line(notes: list[Note], chord_window: float = 0.03) -> list[Note]:
+    """The highest note of each onset (notes starting within chord_window count as one onset): roughly the melody."""
+    line = []
+    for n in sorted(notes, key=lambda x: x.start):
+        if line and n.start - line[-1].start < chord_window:
+            if n.pitch > line[-1].pitch:
+                line[-1] = n
+        else:
+            line.append(n)
+    return line
+
+
+def theme_return(notes: list[Note], opening: float = 20, n: int = 5) -> float:
+    """Share of the opening's melodic shapes (n successive intervals of the top line, so a theme counts in any
+    key) that come back in the last third of the piece."""
+    line = top_line(notes)
+    if len(line) < 3 * n:
+        return 0.0
+    t0, end = line[0].start, line[-1].start  # recordings can begin with silence
+    shapes = lambda part: {tuple(np.diff([x.pitch for x in part[i:i + n + 1]])) for i in range(len(part) - n)}
+    first = shapes([x for x in line if x.start < t0 + opening])
+    last = shapes([x for x in line if x.start >= t0 + (end - t0) * 2 / 3])
+    return len(first & last) / len(first) if first else 0.0

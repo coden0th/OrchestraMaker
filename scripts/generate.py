@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from orchestramaker.batches import load_pieces
 from orchestramaker.instruments import INSTRUMENTS
-from orchestramaker.metrics import most_typical, reference_windows
+from orchestramaker.metrics import pick_take, reference_windows
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import Tokenizer
@@ -54,7 +54,9 @@ def prime_tokens(tokenizer, data, style, instrument, seconds):
 
 def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     meta = {"style": style, "instrument": instrument, **info,
-            "temperature": args.temperature, "top_p": args.top_p, "seed": args.seed}
+            "temperature": args.temperature, "top_p": args.top_p, "min_p": getattr(args, "min_p", 0.0),
+            "seed": args.seed,
+            "memory": getattr(args, "memory", 0)}
     if args.prime:
         ids, meta["prime_title"] = prime_tokens(tokenizer, info["data"], style, instrument, args.prime)
         meta["prime_seconds"] = args.prime
@@ -63,14 +65,16 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     candidates = getattr(args, "candidates", 1)
     idx = torch.tensor([ids], device=device).repeat(candidates, 1)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-        out = model.generate(idx, args.tokens, temperature=args.temperature, top_p=args.top_p, eos=tokenizer.eos)
+        out, coherence = model.generate(idx, args.tokens, temperature=tokenizer.temperatures(args.temperature, getattr(args, 'pitch_temperature', None)), top_p=args.top_p,
+                                        eos=tokenizer.eos, memory=getattr(args, "memory", 0),
+                                        min_p=getattr(args, "min_p", 0.0), return_logprob=True)
     takes = [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out]
     notes = takes[0]
-    if candidates > 1:  # keep the take whose statistics are closest to real music of this style
+    if candidates > 1:  # keep a coherent take whose statistics look like real music of this style
         ref = reference_windows(load_pieces(ROOT / info["data"]), tokenizer, style, args.seconds, 40,
                                 from_start=not args.prime, instrument=instrument)
         if ref:
-            best, meta["choice"] = most_typical(takes, ref)
+            best, meta["choice"] = pick_take(takes, ref, coherence)
             notes = takes[best]
     inst = INSTRUMENTS[instrument]
     raw_problems = inst.check(notes)
@@ -95,7 +99,11 @@ def main():
     # Measured with evaluate_samples.py: top_p < 1 and temperature 1.0 made takes sparse and loopy.
     ap.add_argument("--temperature", type=float, default=1.1)
     ap.add_argument("--top_p", type=float, default=1.0)
-    ap.add_argument("--candidates", type=int, default=4, help="generate N, keep the most typical")
+    ap.add_argument("--min_p", type=float, default=0.0, help="note: made Chopin takes go silent")
+    ap.add_argument("--pitch_temperature", type=float, help="separate temperature for which notes to play")
+    ap.add_argument("--candidates", type=int, default=8, help="generate N, keep the best (see pick_take)")
+    ap.add_argument("--memory", type=int, default=0,
+                    help="keep the first N tokens (the opening) in context for long pieces, e.g. 400")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="outputs/stage4")
     args = ap.parse_args()
