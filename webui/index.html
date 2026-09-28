@@ -10,7 +10,7 @@
     --accent: #3565c9; --roll: #fbfaf7; --row-black: #f0eee9; --octave: #d9d6cf;
     --key-white: #ffffff; --key-black: #2b2b30; --bad: #d23f3f; --playhead: #e08a1e;
     --outside: rgba(210, 63, 63, 0.07); --prime: rgba(224, 138, 30, 0.10);
-    --track0: #3565c9; --track1: #2a9a6a; --track2: #b04fc4; --chip: #efede8;
+    --track0: #3565c9; --track1: #2a9a6a; --track2: #b04fc4; --track3: #d9661f; --chip: #efede8;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -18,7 +18,7 @@
       --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
       --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
       --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
-      --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --chip: #2a2a30;
+      --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --track3: #d9661f; --chip: #2a2a30;
     }
   }
   :root[data-theme="dark"] {
@@ -26,7 +26,7 @@
     --accent: #7aa2f7; --roll: #18181c; --row-black: #1f1f24; --octave: #34343b;
     --key-white: #d9d9de; --key-black: #26262b; --bad: #f06a6a; --playhead: #f0a543;
     --outside: rgba(240, 106, 106, 0.08); --prime: rgba(240, 165, 67, 0.10);
-    --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --chip: #2a2a30;
+    --track0: #4a8fe8; --track1: #23a878; --track2: #bd6fdb; --track3: #d9661f; --chip: #2a2a30;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -99,7 +99,7 @@
 <div class="app">
   <aside>
     <header>
-      <h1>OrchestraMaker</h1>
+      <h1 id="site-title">OrchestraMaker</h1>
       <p>Takes from <code>outputs/</code> · refreshes every 10 s</p>
     </header>
     <nav id="runs"></nav>
@@ -242,7 +242,7 @@ async function setVersion(i) {
 
 function renderLegend(v) {
   const items = v.tracks.map((tr, i) =>
-    `<span><span class="sw" style="background:var(--track${i % 3})"></span>${tr.instrument}` +
+    `<span><span class="sw" style="background:var(--track${i % 4})"></span>${tr.instrument}` +
     ` (range ${noteName(tr.low)}–${noteName(tr.high)})</span>`);
   items.push(`<span><span class="sw" style="background:var(--bad)"></span>outside the instrument's range</span>`);
   items.push(`<span><span class="sw" style="background:var(--outside);outline:1px solid var(--line)"></span>` +
@@ -310,7 +310,7 @@ function draw() {
 
   const sounding = new Map();
   v.tracks.forEach((tr, i) => {
-    const color = css(`--track${i % 3}`), bad = css("--bad");
+    const color = css(`--track${i % 4}`), bad = css("--bad");
     for (const [p, s, d, vel] of tr.notes) {
       if (s > t0 + span) break;
       if (s + d < t0) continue;
@@ -470,7 +470,8 @@ function drawRun() {
   $("run-title").textContent = `Training run: ${r.name}`;
   const chips = [r.params ? `${r.params} parameters` : null,
     r.sync ? `mirrored from ${r.sync.host}` : "local",
-    r.sync && r.sync.synced_at ? `synced ${Math.round(Date.now() / 1000 - r.sync.synced_at)} s ago` : null,
+    r.sync && r.sync.final_done ? "mirror complete"
+      : r.sync && r.sync.synced_at ? `synced ${Math.round(Date.now() / 1000 - r.sync.synced_at)} s ago` : null,
     r.sync && r.sync.best_step ? `checkpoint here for listening: step ${r.sync.best_step.toLocaleString()}` : null];
   $("run-chips").replaceChildren(...chips.filter(Boolean).map(c =>
     Object.assign(document.createElement("span"), { className: "chip", textContent: c })));
@@ -577,6 +578,11 @@ function lineChart(svg, series, xMax) {
   hit.onmouseleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
 }
 
+fetch("/api/site").then(r => r.json()).then(site => {
+  if (!site.title) return;
+  $("site-title").textContent = `OrchestraMaker · ${site.title}`;
+  document.title = `OrchestraMaker ${site.title}`;
+}).catch(() => {});
 loadList();
 loadRuns();
 setInterval(() => { loadList(); loadRuns(); }, 10000);
