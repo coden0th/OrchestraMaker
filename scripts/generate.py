@@ -10,6 +10,7 @@ after make_playable. Browse them with scripts/serve.py.
 """
 
 import argparse
+import json
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -23,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 from orchestramaker.batches import load_pieces
 from orchestramaker.instruments import INSTRUMENTS
-from orchestramaker.metrics import pick_take, reference_windows
+from orchestramaker.metrics import harmony_profile, pick_take, reference_windows
 from orchestramaker.model import GPT, GPTConfig
 from orchestramaker.takes import save_take
 from orchestramaker.tokenizer import TIME_STEP, Tokenizer
@@ -69,6 +70,29 @@ def fingerprint():
     return np.load(path) if path.exists() else None
 
 
+def style_limits(data: str, tokenizer, style: str, instrument: str) -> dict:
+    """Real music's level for the brakes, per style: 90th-percentile note density of 10 s windows and the
+    median worst-window dissonance of 30 s openings. Computed once, cached in <data>/style_limits.json."""
+    cache = ROOT / data / "style_limits.json"
+    limits = json.loads(cache.read_text()) if cache.exists() else {}
+    key = f"{style}/{instrument}"
+    if key not in limits:
+        pieces = load_pieces(ROOT / data)
+        dens = [w["notes_per_s"] for w in reference_windows(pieces, tokenizer, style, 10, 60, instrument=instrument)]
+        rng = np.random.default_rng(0)
+        chosen = [p for p in pieces if p["style"] == style and p["split"] == "validation"
+                  and p["instrument"] == instrument]
+        diss = []
+        for i in rng.permutation(len(chosen))[:40]:
+            ns = tokenizer.decode(np.asarray(chosen[i]["tokens"]))[2]
+            t0 = min(n.start for n in ns)
+            diss.append(harmony_profile([n for n in ns if n.start - t0 < 30])["worst_dissonance"])
+        limits[key] = {"max_density": float(np.percentile(dens, 90)) if dens else None,
+                       "max_dissonance": float(np.median(diss)) if diss else None}
+        cache.write_text(json.dumps(limits, indent=1))
+    return limits[key]
+
+
 def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     meta = {"style": style, "instrument": instrument, **info,
             "temperature": args.temperature, "top_p": args.top_p, "min_p": getattr(args, "min_p", 0.0),
@@ -79,13 +103,21 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
         meta["prime_seconds"] = args.prime
     else:
         ids = [tokenizer.bos, tokenizer.index[f"STYLE_{style}"], tokenizer.index[f"INST_{instrument}"]]
+    brakes = {}
+    if getattr(args, "brakes", True):  # measured: dissonance back to real music's level, critic +0.2 stars
+        limits = style_limits(info["data"], tokenizer, style, instrument)
+        meta["brakes"] = limits
+        brakes = {"note_starts": tokenizer.pitch_of >= 0, "max_density": limits["max_density"],
+                  "pitch_of": tokenizer.pitch_of, "dur_steps": tokenizer.dur_steps(),
+                  "clash_penalty": 1.0, "max_dissonance": limits["max_dissonance"]}
     candidates = getattr(args, "candidates", 1)
     idx = torch.tensor([ids], device=device).repeat(candidates, 1)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
         out, coherence = model.generate(idx, args.tokens, temperature=tokenizer.temperatures(args.temperature, getattr(args, 'pitch_temperature', None)), top_p=args.top_p,
                                         eos=tokenizer.eos, memory=getattr(args, "memory", 0),
                                         min_p=getattr(args, "min_p", 0.0), return_logprob=True,
-                                        time_steps=tokenizer.time_steps(), min_steps=args.seconds / TIME_STEP)
+                                        time_steps=tokenizer.time_steps(), min_steps=args.seconds / TIME_STEP,
+                                        **brakes)
     takes = [[n for n in tokenizer.decode(row.tolist())[2] if n.start < args.seconds] for row in out]
     notes = takes[0]
     if candidates > 1:  # keep a coherent take whose statistics look like real music of this style
@@ -126,6 +158,8 @@ def main():
     ap.add_argument("--pitch_temperature", type=float, help="separate temperature for which notes to play")
     ap.add_argument("--candidates", type=int, default=8, help="generate N, keep the best (see pick_take)")
     ap.add_argument("--critic", action="store_true", help="pick by the listener's critic instead of coherence")
+    ap.add_argument("--no-brakes", dest="brakes", action="store_false",
+                    help="play freely: no density brake, no brake on runaway dissonance")
     ap.add_argument("--memory", type=int, default=0,
                     help="keep the first N tokens (the opening) in context for long pieces, e.g. 400")
     ap.add_argument("--seed", type=int, default=0)

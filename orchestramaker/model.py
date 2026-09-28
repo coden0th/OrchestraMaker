@@ -155,7 +155,9 @@ class GPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_p=0.95, eos=None, memory=0, min_p=0.0,
-                 return_logprob=False, time_steps=None, min_steps=0):
+                 return_logprob=False, time_steps=None, min_steps=0, note_starts=None, max_density=None,
+                 brake=3.0, density_window=3.0, pitch_of=None, dur_steps=None, clash_penalty=0.0,
+                 max_dissonance=None):
         """Sample with a KV cache. idx starts with BOS STYLE INST; when the context is full, restart the
         cache from STYLE INST + the most recent tokens (like the mid-piece windows seen in training).
         memory > 0 also keeps the piece's first `memory` tokens (its opening) in every restarted context,
@@ -165,7 +167,15 @@ class GPT(nn.Module):
         played that long (pieces in the data are often single movements that end after 1-3 minutes).
         min_p drops tokens whose probability is below min_p x the most likely token's.
         return_logprob also returns each row's mean log-probability of its sampled tokens under the
-        untempered model: how much the model itself "believes" what it played (a coherence score)."""
+        untempered model: how much the model itself "believes" what it played (a coherence score).
+        max_density (notes per second over the last density_window seconds; needs time_steps and the
+        note_starts token mask) is a brake against the runaway "panic" where a few dense notes make the
+        model play ever denser: above it, note tokens lose `brake` logits, so waiting becomes likelier.
+        clash_penalty (needs time_steps, pitch_of and dur_steps from the tokenizer) takes that many logits off a
+        pitch for every sounding note it would clash with (minor 2nd, tritone, major 7th): dissonance gets
+        dearer without being forbidden - blind ratings drop with a take's most dissonant stretch.
+        With max_dissonance the penalty only applies while the share of clashing pairs over the last 24 notes
+        is above it (e.g. the style's real level): free playing, a brake only when the harmony runs away."""
         block = self.config.block_size
         prefix = idx[:, 1:3]
         if not isinstance(temperature, (int, float)):
@@ -177,6 +187,23 @@ class GPT(nn.Module):
         clock = torch.zeros(idx.shape[0], device=idx.device)
         if time_steps is not None:
             time_steps = torch.as_tensor(time_steps, device=idx.device)
+        governed = max_density is not None and note_starts is not None and time_steps is not None
+        if governed:
+            note_starts = torch.as_tensor(note_starts, device=idx.device)
+            onsets = torch.full((idx.shape[0], 256), float("-inf"), device=idx.device)  # recent note clocks
+            window = density_window / 0.01  # clock is in 10 ms steps
+        harmonic = clash_penalty > 0 and pitch_of is not None and dur_steps is not None and time_steps is not None
+        if harmonic:
+            pitch_of = torch.as_tensor(pitch_of, device=idx.device)
+            dur_steps = torch.as_tensor(dur_steps, device=idx.device)
+            p = torch.arange(128, device=idx.device)
+            clashes = torch.isin((p[None] - p[:, None]) % 12, torch.tensor([1, 6, 11], device=idx.device)).float()
+            ends = torch.zeros(idx.shape[0], 128, device=idx.device)       # clock at which each pitch stops
+            awaiting = torch.full((idx.shape[0],), -1, dtype=torch.long, device=idx.device)  # pitch before its DUR
+            pitch_tokens = pitch_of >= 0
+            token_pitch = pitch_of.clamp(min=0)
+            recent_clash = torch.zeros(idx.shape[0], 24, device=idx.device)  # per recent note: clashes it made
+            recent_pairs = torch.zeros(idx.shape[0], 24, device=idx.device)  # ... and notes it sounded with
         for _ in range(max_new_tokens):
             if past is not None and past[0][0].shape[2] + pending.shape[1] > block:
                 recent = block * 3 // 4 - memory
@@ -185,7 +212,20 @@ class GPT(nn.Module):
             logits = logits[:, -1].float()
             if eos is not None and time_steps is not None:
                 logits[:, eos] = torch.where(clock < min_steps, float("-inf"), logits[:, eos])
-            probs = F.softmax(logits / temperature, dim=-1)
+            sample_logits = logits
+            if governed:
+                dense = (onsets >= clock[:, None] - window).sum(1) > max_density * density_window
+                sample_logits = logits - brake * (dense[:, None] & note_starts[None]).float()
+            if harmonic:
+                sounding = (ends > clock[:, None]).float()                   # (B, 128)
+                clash_now = sounding @ clashes                               # (B, 128): clashes per pitch
+                cost = clash_now[:, token_pitch] * pitch_tokens
+                active = torch.ones(idx.shape[0], 1, device=idx.device)
+                if max_dissonance is not None:
+                    running = recent_clash.sum(1) / recent_pairs.sum(1).clamp(min=1)
+                    active = (running > max_dissonance).float()[:, None]
+                sample_logits = sample_logits - clash_penalty * cost * active
+            probs = F.softmax(sample_logits / temperature, dim=-1)
             sorted_p, order = probs.sort(descending=True)
             sorted_p[sorted_p.cumsum(-1) - sorted_p > top_p] = 0  # nucleus sampling
             sorted_p[sorted_p < min_p * sorted_p[:, :1]] = 0
@@ -195,6 +235,27 @@ class GPT(nn.Module):
             count += (~finished).float()
             if time_steps is not None:
                 clock += time_steps[nxt.squeeze(1)]
+            if harmonic:
+                tok_ = nxt.squeeze(1)
+                new_note = pitch_tokens[tok_]
+                if new_note.any():  # remember how much this note clashed with what was sounding
+                    here = pitch_of[tok_].clamp(min=0)
+                    made = clash_now.gather(1, here[:, None]).squeeze(1)
+                    pairs = sounding.sum(1)
+                    recent_clash = torch.where(new_note[:, None], torch.cat([recent_clash[:, 1:], made[:, None]], 1),
+                                               recent_clash)
+                    recent_pairs = torch.where(new_note[:, None], torch.cat([recent_pairs[:, 1:], pairs[:, None]], 1),
+                                               recent_pairs)
+                awaiting = torch.where(pitch_tokens[tok_], pitch_of[tok_], awaiting)
+                is_dur = (dur_steps[tok_] >= 0) & (awaiting >= 0)
+                rows = torch.nonzero(is_dur).squeeze(1)
+                if len(rows):
+                    ends[rows, awaiting[rows]] = torch.maximum(ends[rows, awaiting[rows]],
+                                                               clock[rows] + dur_steps[tok_[rows]])
+                    awaiting[rows] = -1
+            if governed:
+                played = note_starts[nxt.squeeze(1)]
+                onsets = torch.where(played[:, None], torch.cat([onsets[:, 1:], clock[:, None]], 1), onsets)
             if eos is not None:
                 finished |= nxt.squeeze(1) == eos
             idx = torch.cat([idx, nxt], dim=1)

@@ -99,6 +99,11 @@ class Tokenizer:
         """How far each token moves the clock, in TIME_STEPs (TIME_k -> k, everything else 0)."""
         return np.array([int(t[5:]) if t.startswith("TIME_") else 0 for t in self.vocab], dtype=np.float32)
 
+    def dur_steps(self) -> np.ndarray:
+        """How long each DUR token lasts, in TIME_STEPs (-1 for other tokens): lets sampling track sounding notes."""
+        return np.array([DUR_BINS[int(t[4:])] / TIME_STEP if t.startswith("DUR_") else -1 for t in self.vocab],
+                        dtype=np.float32)
+
     def temperatures(self, default: float, pitch: float | None = None) -> np.ndarray:
         """Per-token sampling temperature: `pitch` for pitch tokens (which notes), `default` for the rest
         (when, how long, how loud)."""

@@ -214,6 +214,7 @@ async function loadList() {
 }
 
 async function select(url) {
+  if (document.activeElement === $("rate-comment")) await saveComment();
   state.url = url;
   runState.name = null;
   $("runview").hidden = true;
@@ -670,6 +671,23 @@ function exitBlind() {
   document.body.classList.remove("blind");
   if (state.take) $("title").textContent = state.take.meta.title || state.take.name;
 }
+
+// Notes are saved when you leave the field or press Enter (a note typed after rating used to be lost).
+async function saveComment() {
+  const current = state.url && rateState.ratings[state.url];
+  const comment = $("rate-comment").value;
+  if (!current || current.comment === comment) return;
+  const res = await fetch("/api/rate", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: state.url, rating: current.rating, comment }) });
+  if (res.ok) {
+    current.comment = comment;
+    $("rate-comment").style.borderColor = "var(--track1)";
+    setTimeout(() => { $("rate-comment").style.borderColor = ""; }, 800);
+  }
+}
+$("rate-comment").addEventListener("change", saveComment);
+$("rate-comment").addEventListener("keydown", e => { if (e.key === "Enter") e.target.blur(); });
+$("rate-comment").placeholder = "optional note (Enter to save), e.g. 'nice first half, then chaotic'";
 
 $("blind-btn").onclick = enterBlind;
 $("blind-exit").onclick = exitBlind;

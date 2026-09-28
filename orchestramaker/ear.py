@@ -43,25 +43,34 @@ class Ear:
         for layer in self.model.encoder.layers:
             layer.register_forward_hook(keep)
 
-    @torch.no_grad()
     def listen(self, wav: str | Path) -> np.ndarray:
-        """(layers, 2 * hidden): per-layer mean and std over time of the whole clip. Cached by file content."""
+        """(layers, 2 * hidden): per-layer mean and std over time of the whole clip."""
+        return self.hear(wav)[0]
+
+    def listen_windows(self, wav: str | Path) -> np.ndarray:
+        """(windows, layers, 2 * hidden): the same per WINDOW-second stretch, to find a take's weakest part."""
+        return self.hear(wav)[1]
+
+    @torch.no_grad()
+    def hear(self, wav: str | Path) -> tuple[np.ndarray, np.ndarray]:
+        """Whole-clip and per-window features, cached by file content."""
         wav = Path(wav)
-        key = hashlib.sha1(wav.read_bytes()).hexdigest()
-        cached = CACHE / f"{key}.npy"
+        cached = CACHE / f"{hashlib.sha1(wav.read_bytes()).hexdigest()}.npz"
         if cached.exists():
-            return np.load(cached)
+            with np.load(cached) as c:
+                return c["take"], c["windows"]
         audio, rate = sf.read(wav, dtype="float32")
         audio = resample(audio.mean(axis=1) if audio.ndim == 2 else audio, rate, RATE)
         states = []
-        for start in range(0, max(len(audio) - RATE, 1), WINDOW * RATE):
+        # Windows of WINDOW seconds; a last stretch under 5 s (often the render's silent tail) is left out.
+        for start in range(0, max(len(audio) - 5 * RATE, 0) + 1, WINDOW * RATE):
             chunk = audio[start:start + WINDOW * RATE]
             inputs = self.processor(chunk, sampling_rate=RATE, return_tensors="pt").to(self.device)
             self.states.clear()
             self.model(**inputs)
             states.append(torch.stack(self.states)[:, 0].float().cpu())                # (layers, T, H)
-        frames = torch.cat(states, dim=1)
-        vector = torch.cat([frames.mean(1), frames.std(1)], dim=1).numpy()
+        pool = lambda frames: torch.cat([frames.mean(1), frames.std(1)], dim=1).numpy()
+        take, windows = pool(torch.cat(states, dim=1)), np.stack([pool(s) for s in states])
         CACHE.mkdir(parents=True, exist_ok=True)
-        np.save(cached, vector)
-        return vector
+        np.savez(cached, take=take, windows=windows)
+        return take, windows
