@@ -128,6 +128,34 @@ What we learned from v1:
   Mozart: 25% of opening shapes return in the last third), even with the opening kept in context;
   without it the texture drifts (20 notes/s mid-piece vs ~8 in real Mozart).
 
+**v1.5 — our own model, aiming at Aria's quality** (done)
+
+[EleutherAI's Aria](https://github.com/EleutherAI/aria) (0.7B parameters, 60k hours) continued our prompts
+convincingly (`scripts/compare_aria.py`), so it became the quality bar for a model of our own.
+
+- [x] Laptop ablations first (`configs/ablation.json`, 19M params, equal tokens), in bits per note:
+      GPT-2 13.57 → LLaMA-style 11.60 → LLaMA + compact tokens 11.78 (35% more music per context).
+- [x] Data: PianoCoRe + PiJAMA + 18,377 jazz/ragtime/blues files from Aria-MIDI (~1,060 h, audio score ≥ 0.95).
+- [x] 153M params, LLaMA-style (RoPE, RMSNorm, SwiGLU), compact tokens (NOTE_p_v), 4096 context;
+      25k steps, 3.3B tokens, 7.9 h on an A100 (~13.5 USD). The pod removed itself after the laptop had
+      the final checkpoint (`scripts/runpod_finish.sh`).
+
+Results:
+
+| | v1 | v1.5 |
+|---|---|---|
+| bits/note on the same held-out notes, classical | 8.60 | 8.56 |
+| bits/note on the same held-out notes, jazz | 11.02 | **10.06** |
+| typical takes of 16 (Mozart / Chopin / jazz piano / Art Tatum) | 15 / 9 / 13 / 7 | 14 / **11** / **16** / **10** |
+
+- Classical prediction barely improved; jazz clearly did. Generated takes look more like real music,
+  especially jazz. Best temperature is style-dependent: Mozart 1.0, Chopin and jazz 1.1.
+- **Coherence-based picking can select memorized passages**: the most coherent of 8 Mozart candidates was
+  26% Sonata K.545. `scripts/build_fingerprint.py` + `pick_take` now skip takes that quote popular repertoire.
+- Continuing real prompts, v1.5 copies nothing (Aria: 5–15% of the original) but runs denser than the
+  real music, and truncated sampling (min-p, as Aria uses) makes it collapse into loops. Aria's
+  distribution is still much cleaner — the gap is mostly scale.
+
 **v2 — instruments together**
 - [ ] Multi-track tokens: every note carries its instrument; the header lists the ensemble.
 - [ ] Jazz combo from the Weimar Jazz Database: solo + walking bass + chord-based comping, time-aligned.

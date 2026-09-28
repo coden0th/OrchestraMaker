@@ -20,7 +20,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_memorization import sequence_hashes  # noqa: E402
-from generate import ROOT, load  # noqa: E402
+from generate import ROOT, fingerprint, load  # noqa: E402
 
 from orchestramaker.batches import load_pieces  # noqa: E402
 from orchestramaker.datasets import score_notes  # noqa: E402
@@ -72,10 +72,14 @@ def main():
     ap.add_argument("--prompt", type=float, default=10)
     ap.add_argument("--variations", type=int, default=2)
     ap.add_argument("--seconds", type=float, default=70)
+    ap.add_argument("--checkpoint", default="checkpoints/v1_piano/best.pt")
+    ap.add_argument("--name", default="v1", help="label for our model in take names and the output folder")
+    ap.add_argument("--temperature", type=float, default=1.1)
+    ap.add_argument("--min_p", type=float, default=0.0)
     args = ap.parse_args()
 
     device = "cuda"
-    model, tok, info = load(ROOT / "checkpoints/v1_piano/best.pt", device)
+    model, tok, info = load(ROOT / args.checkpoint, device)
     pieces = load_pieces(ROOT / info["data"])
     rng = np.random.default_rng(3)
     print(f"{'prompt':34s} {'model':6s} {'notes/s':>7s} {'pitches':>7s} {'repeat':>6s} {'copies original':>15s}")
@@ -88,7 +92,7 @@ def main():
         notes = [Note(n.pitch, n.start - t0, n.duration, n.velocity) for n in notes]
         prompt = [n for n in notes if n.start < args.prompt]
         original = [n for n in notes if args.prompt <= n.start < args.seconds]
-        out = ROOT / "outputs/aria_vs_v1" / style
+        out = ROOT / f"outputs/aria_vs_{args.name.replace('.', '_')}" / style
         out.mkdir(parents=True, exist_ok=True)
         write_midi(prompt, out / "prompt.mid")
         title = piece["title"].replace("_", " ")
@@ -104,17 +108,18 @@ def main():
             torch.manual_seed(v)
             idx = torch.tensor([ids], device=device).repeat(8, 1)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                rows, coherence = model.generate(idx, 2600, temperature=tok.temperatures(1.1), top_p=1.0,
+                rows, coherence = model.generate(idx, 2600, temperature=tok.temperatures(args.temperature), top_p=1.0,
+                                                 min_p=args.min_p,
                                                  eos=tok.eos, return_logprob=True, time_steps=tok.time_steps(),
                                                  min_steps=args.seconds / TIME_STEP)
             takes = [[n for n in tok.decode(r.tolist())[2] if n.start < args.seconds] for r in rows]
-            best, _ = pick_take(takes, ref, coherence)
+            best, _ = pick_take(takes, ref, coherence, fingerprint())
             v1_takes.append(takes[best])
         torch.cuda.empty_cache()
 
         aria_takes = [[n for n in t if n.start < args.seconds]
                       for t in aria_continue(out / "prompt.mid", args.prompt, args.variations, out / "aria_midi")]
-        for name, takes in (("v1", v1_takes), ("aria", aria_takes)):
+        for name, takes in ((args.name, v1_takes), ("aria", aria_takes)):
             for v, take in enumerate(takes):
                 cont = [n for n in take if n.start >= args.prompt]
                 stats, copied = describe(cont), copy_share(cont, original)
