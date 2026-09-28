@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--data", help="token directory (default: the one the take's checkpoint was trained on)")
     ap.add_argument("--style", help="default: the take's style")
     ap.add_argument("-n", type=int, default=8)
+    ap.add_argument("--any-split", action="store_true", help="also search validation pieces (e.g. with partial local data)")
     args = ap.parse_args()
 
     take = json.loads(args.take.read_text())
@@ -49,7 +50,7 @@ def main():
     tokenizer = Tokenizer.load(data / "vocab.json")
     found, results = np.zeros(len(generated), dtype=bool), []
     for piece in load_pieces(data):
-        if piece["style"] != style or piece["split"] != "train":
+        if piece["style"] != style or (piece["split"] != "train" and not args.any_split):
             continue
         ids = np.asarray(piece["tokens"]).astype(np.int64)
         pitches = tokenizer.pitch_of[ids]
