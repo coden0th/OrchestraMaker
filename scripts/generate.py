@@ -11,7 +11,10 @@ after make_playable. Browse them with scripts/serve.py.
 
 import argparse
 import sys
+from functools import lru_cache
 from pathlib import Path
+
+import numpy as np
 
 import torch
 
@@ -52,6 +55,13 @@ def prime_tokens(tokenizer, data, style, instrument, seconds):
     return tokenizer.encode([n for n in notes if n.start < seconds], style, instrument)[:-1], piece["title"]
 
 
+@lru_cache(maxsize=1)
+def fingerprint():
+    """Popular-repertoire fingerprint (scripts/build_fingerprint.py), if it has been built."""
+    path = ROOT / "data/fingerprint_popular_8.npy"
+    return np.load(path) if path.exists() else None
+
+
 def play(model, tokenizer, info, style, instrument, args, device, out_dir):
     meta = {"style": style, "instrument": instrument, **info,
             "temperature": args.temperature, "top_p": args.top_p, "min_p": getattr(args, "min_p", 0.0),
@@ -75,7 +85,7 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
         ref = reference_windows(load_pieces(ROOT / info["data"]), tokenizer, style, args.seconds, 40,
                                 from_start=not args.prime, instrument=instrument)
         if ref:
-            best, meta["choice"] = pick_take(takes, ref, coherence)
+            best, meta["choice"] = pick_take(takes, ref, coherence, fingerprint())
             notes = takes[best]
     inst = INSTRUMENTS[instrument]
     raw_problems = inst.check(notes)

@@ -47,20 +47,41 @@ def classify(stats: dict, ref: list[dict]) -> str:
     return "typical"
 
 
-def pick_take(takes: list[list[Note]], ref: list[dict], coherence: list[float]) -> tuple[int, str]:
-    """Among takes whose statistics look like real music of the style (not sparse, not looping), the one the
-    model found most coherent (highest mean log-probability). Falls back to all takes if none is typical."""
+QUOTE_SHARE = 0.06  # takes above this share of popular-repertoire sequences are quoting a known piece
+
+
+def popular_share(notes: list[Note], fingerprint: np.ndarray, n: int = 8) -> float:
+    """Share of a take's n-note pitch sequences found in the popular-repertoire fingerprint
+    (scripts/build_fingerprint.py). Original takes: 0-3%; a take replaying Mozart's K.545: 9%."""
+    p = np.array([x.pitch for x in sorted(notes, key=lambda x: (x.start, x.pitch))], dtype=np.int64)
+    if len(p) < n:
+        return 0.0
+    h = np.zeros(len(p) - n + 1, dtype=np.int64)
+    for i in range(n):
+        h = h * 131 + p[i:len(p) - n + 1 + i]
+    return float(np.isin(np.unique(h), fingerprint).mean())
+
+
+def pick_take(takes: list[list[Note]], ref: list[dict], coherence: list[float],
+              fingerprint: np.ndarray | None = None) -> tuple[int, str]:
+    """Among takes whose statistics look like real music of the style (not sparse, not looping) and that don't
+    quote well-known pieces, the one the model found most coherent (highest mean log-probability).
+    Coherence alone favours memorized passages - the model is most sure of what it has heard most often."""
     scored = []
     for i, notes in enumerate(takes):
         stats = describe(notes)
         if stats:
             cls = classify(stats, ref)
+            if cls == "typical" and fingerprint is not None and popular_share(notes, fingerprint) > QUOTE_SHARE:
+                cls = "quotes"
             scored.append((cls != "typical", -coherence[i], i, cls))
     if not scored:
         return 0, "empty"
     _, neg_coherence, i, cls = min(scored)
     typical = sum(c == "typical" for *_, c in scored)
-    return i, f"{cls}, most coherent of {len(takes)} ({typical} typical), log-prob {-neg_coherence:.2f}"
+    quotes = sum(c == "quotes" for *_, c in scored)
+    return i, (f"{cls}, most coherent of {len(takes)} ({typical} typical"
+               f"{f', {quotes} quoting known pieces' if quotes else ''}), log-prob {-neg_coherence:.2f}")
 
 
 def reference_windows(pieces: list[dict], tokenizer, style: str, seconds: float, count: int, seed: int = 0,
