@@ -47,19 +47,21 @@ def classify(stats: dict, ref: list[dict]) -> str:
     return "typical"
 
 
-QUOTE_SHARE = 0.06  # takes above this share of popular-repertoire sequences are quoting a known piece
+QUOTE_SHARE = 0.2  # full-data fingerprint: original takes 0-8%, quotes 41-55%, real excerpts ~57%
 
 
 def popular_share(notes: list[Note], fingerprint: np.ndarray, n: int = 8) -> float:
     """Share of a take's n-note pitch sequences found in the popular-repertoire fingerprint
-    (scripts/build_fingerprint.py). Original takes: 0-3%; a take replaying Mozart's K.545: 9%."""
+    (scripts/build_fingerprint.py). Original takes: 0-8%; takes replaying K.545 or a meme-famous piece: 41-55%."""
     p = np.array([x.pitch for x in sorted(notes, key=lambda x: (x.start, x.pitch))], dtype=np.int64)
     if len(p) < n:
         return 0.0
     h = np.zeros(len(p) - n + 1, dtype=np.int64)
     for i in range(n):
         h = h * 131 + p[i:len(p) - n + 1 + i]
-    return float(np.isin(np.unique(h), fingerprint).mean())
+    h = np.unique(h)
+    at = np.minimum(np.searchsorted(fingerprint, h), len(fingerprint) - 1)  # fingerprint is sorted (np.unique)
+    return float((fingerprint[at] == h).mean())
 
 
 def pick_take(takes: list[list[Note]], ref: list[dict], coherence: list[float],
