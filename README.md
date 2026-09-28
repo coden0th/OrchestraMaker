@@ -156,6 +156,25 @@ Results:
   real music, and truncated sampling (min-p, as Aria uses) makes it collapse into loops. Aria's
   distribution is still much cleaner — the gap is mostly scale.
 
+**v1.6 — an ear and a critic** (in progress)
+
+The listener rated ~160 takes blind (1-5) in the web UI (`serve.py --pool`, keys 1-5), without knowing
+model, settings or whether a take was a real performance (real: 3.72 on average, v1.5: 2.52).
+- `ear.py`: MERT-v1-95M listens to each rendered take. `train_critic.py` learns the listener's taste:
+  Spearman 0.51 with their ratings under nested cross-validation (note statistics alone: 0.45).
+  `generate.py --critic` keeps the candidate the critic predicts they'd like most; in a blind A/B test
+  its picks won 6 of 9 pairs (2.22 vs 1.56 stars; not yet significant).
+- What the ratings say: the worst stretch decides (worst-window dissonance: Spearman -0.43, peak density
+  -0.17). Takes often start well and fall apart - v1.5's Liszt was twice as dissonant as real Liszt.
+  Adaptive brakes on runaway density and dissonance bring it back to real levels (on by default), but
+  ratings of 40-second braked takes (1.88) show the real problem: **quality decays with length**.
+- A popular-repertoire fingerprint over all 195k training performances catches quotes (the take heard
+  as a meme song was Chopin's Nocturne Op.9 No.2, 81% of it in the training data).
+- For comparison, Claude wrote two pieces note by note from classical-style rules (`claude_allegretto.py`,
+  `claude_sonata.py`: a sonata movement from D minor to D major). They keep form over one and two minutes -
+  what the models can't yet. Next idea: let a plan (form, harmony, cadences) give the structure and the
+  model fill it in its learned style.
+
 **v2 — instruments together**
 - [ ] Multi-track tokens: every note carries its instrument; the header lists the ensemble.
 - [ ] Jazz combo from the Weimar Jazz Database: solo + walking bass + chord-based comping, time-aligned.
