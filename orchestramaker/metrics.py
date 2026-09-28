@@ -64,26 +64,30 @@ def popular_share(notes: list[Note], fingerprint: np.ndarray, n: int = 8) -> flo
     return float((fingerprint[at] == h).mean())
 
 
-def pick_take(takes: list[list[Note]], ref: list[dict], coherence: list[float],
-              fingerprint: np.ndarray | None = None) -> tuple[int, str]:
+def pick_take(takes: list[list[Note]], ref: list[dict], scores, fingerprint: np.ndarray | None = None,
+              label: str = "log-prob") -> tuple[int, str]:
     """Among takes whose statistics look like real music of the style (not sparse, not looping) and that don't
-    quote well-known pieces, the one the model found most coherent (highest mean log-probability).
+    quote well-known pieces, the one with the highest score. scores: the model's coherence (mean
+    log-probability), or a callable giving the critic's predicted rating for take i (only called for takes
+    that pass the checks, since listening costs time).
     Coherence alone favours memorized passages - the model is most sure of what it has heard most often."""
-    scored = []
+    checked = []
     for i, notes in enumerate(takes):
         stats = describe(notes)
         if stats:
             cls = classify(stats, ref)
             if cls == "typical" and fingerprint is not None and popular_share(notes, fingerprint) > QUOTE_SHARE:
                 cls = "quotes"
-            scored.append((cls != "typical", -coherence[i], i, cls))
-    if not scored:
+            checked.append((i, cls))
+    if not checked:
         return 0, "empty"
-    _, neg_coherence, i, cls = min(scored)
-    typical = sum(c == "typical" for *_, c in scored)
-    quotes = sum(c == "quotes" for *_, c in scored)
-    return i, (f"{cls}, most coherent of {len(takes)} ({typical} typical"
-               f"{f', {quotes} quoting known pieces' if quotes else ''}), log-prob {-neg_coherence:.2f}")
+    pool = [(i, c) for i, c in checked if c == "typical"] or checked
+    score = scores if callable(scores) else scores.__getitem__
+    best_score, i, cls = max((score(i), i, c) for i, c in pool)
+    typical = sum(c == "typical" for _, c in checked)
+    quotes = sum(c == "quotes" for _, c in checked)
+    return i, (f"{cls}, best of {len(takes)} by {label} ({typical} typical"
+               f"{f', {quotes} quoting known pieces' if quotes else ''}), {label} {best_score:.2f}")
 
 
 def reference_windows(pieces: list[dict], tokenizer, style: str, seconds: float, count: int, seed: int = 0,

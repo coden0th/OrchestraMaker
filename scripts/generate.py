@@ -56,6 +56,13 @@ def prime_tokens(tokenizer, data, style, instrument, seconds):
 
 
 @lru_cache(maxsize=1)
+def critic():
+    """The listener's critic (scripts/train_critic.py): loads MERT, so only when --critic asks for it."""
+    from orchestramaker.critic import Critic
+    return Critic()
+
+
+@lru_cache(maxsize=1)
 def fingerprint():
     """Popular-repertoire fingerprint (scripts/build_fingerprint.py), if it has been built."""
     path = ROOT / "data/fingerprint_popular_8.npy"
@@ -85,7 +92,12 @@ def play(model, tokenizer, info, style, instrument, args, device, out_dir):
         ref = reference_windows(load_pieces(ROOT / info["data"]), tokenizer, style, args.seconds, 40,
                                 from_start=not args.prime, instrument=instrument)
         if ref:
-            best, meta["choice"] = pick_take(takes, ref, coherence, fingerprint())
+            if getattr(args, "critic", False):  # listen to each surviving candidate, keep the predicted favourite
+                inst = INSTRUMENTS[instrument]
+                best, meta["choice"] = pick_take(takes, ref, lambda i: critic().score(inst, takes[i]),
+                                                 fingerprint(), label="critic")
+            else:
+                best, meta["choice"] = pick_take(takes, ref, coherence, fingerprint())
             notes = takes[best]
     inst = INSTRUMENTS[instrument]
     raw_problems = inst.check(notes)
@@ -113,6 +125,7 @@ def main():
     ap.add_argument("--min_p", type=float, default=0.0, help="note: made Chopin takes go silent")
     ap.add_argument("--pitch_temperature", type=float, help="separate temperature for which notes to play")
     ap.add_argument("--candidates", type=int, default=8, help="generate N, keep the best (see pick_take)")
+    ap.add_argument("--critic", action="store_true", help="pick by the listener's critic instead of coherence")
     ap.add_argument("--memory", type=int, default=0,
                     help="keep the first N tokens (the opening) in context for long pieces, e.g. 400")
     ap.add_argument("--seed", type=int, default=0)
