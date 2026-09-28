@@ -85,6 +85,16 @@
   .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
          border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.12);
          white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .rating { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 12px; }
+  .rating .seg button { min-width: 84px; }
+  .rating input { flex: 1; min-width: 180px; max-width: 420px; padding: 5px 8px; border: 1px solid var(--line);
+                  border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; }
+  .blindbar { display: none; align-items: center; gap: 10px; margin-bottom: 12px; }
+  body.blind .blindbar { display: flex; }
+  body.blind #runs, body.blind #list, body.blind #chips, body.blind #versions, body.blind #problems { display: none; }
+  .hdr-btn { margin-top: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+             border-radius: 8px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  .stars { color: var(--playhead); font-size: 12px; margin-left: 6px; }
   table.vals { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
   table.vals td, table.vals th { padding: 2px 10px 2px 0; text-align: right; }
   @media (max-width: 760px) {
@@ -101,6 +111,7 @@
     <header>
       <h1 id="site-title">OrchestraMaker</h1>
       <p>Takes from <code>outputs/</code> · refreshes every 10 s</p>
+      <button class="hdr-btn" id="blind-btn" hidden></button>
     </header>
     <nav id="runs"></nav>
     <nav id="list"></nav>
@@ -112,12 +123,23 @@
         <code>scripts/generate.py</code> or <code>scripts/watch_progress.py</code> writes them.</p>
     </div>
     <div id="view" hidden>
+      <div class="blindbar">
+        <strong id="blind-progress"></strong>
+        <span class="sub">Blind rating: model, settings and source are hidden. Keys 1–5 rate and go on, N skips.</span>
+        <button class="hdr-btn" id="blind-skip" style="margin:0">Skip</button>
+        <button class="hdr-btn" id="blind-exit" style="margin:0">Exit</button>
+      </div>
       <h2 id="title"></h2>
       <div class="chips" id="chips"></div>
       <div class="toolbar">
         <div class="seg" id="versions"></div>
         <audio id="audio" controls preload="auto"></audio>
         <span class="now" id="now"></span>
+      </div>
+      <div class="rating">
+        <span class="sub">Your rating</span>
+        <div class="seg" id="rate"></div>
+        <input id="rate-comment" placeholder="optional note, e.g. 'nice first half, then chaotic'">
       </div>
       <div class="toolbar">
         <span class="sub">Window</span>
@@ -181,6 +203,9 @@ async function loadList() {
       badge.className = "badge " + (t.problems ? "bad" : "ok");
       badge.textContent = t.problems ? `${t.problems} unplayable` : "playable";
       b.firstChild.append(badge);
+      const r = rateState.ratings[t.url];
+      if (r) b.firstChild.append(Object.assign(document.createElement("span"),
+        { className: "stars", textContent: "★".repeat(r.rating) }));
       b.lastChild.textContent = sub;
       b.onclick = () => select(t.url);
       nav.append(b);
@@ -192,7 +217,7 @@ async function select(url) {
   state.url = url;
   runState.name = null;
   $("runview").hidden = true;
-  history.replaceState(null, "", "#" + url);
+  history.replaceState(null, "", rateState.blind ? "#blind" : "#" + url);  // don't reveal the file in blind mode
   state.take = await (await fetch(url)).json();
   state.take.dir = url.slice(0, url.lastIndexOf("/") + 1);
   state.viewStart = 0;
@@ -201,7 +226,8 @@ async function select(url) {
   document.querySelectorAll(".take").forEach(b => b.classList.remove("active"));
   loadList();
   const m = state.take.meta;
-  $("title").textContent = m.title || state.take.name;
+  $("title").textContent = rateState.blind ? `Take ${rateState.order.indexOf(url) + 1}` : m.title || state.take.name;
+  renderRating();
   const chips = [];
   if (m.style) chips.push(`style: ${m.style}`);
   if (m.instrument) chips.push(`instrument: ${m.instrument}`);
@@ -578,12 +604,92 @@ function lineChart(svg, series, xMax) {
   hit.onmouseleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
 }
 
+
+// ---- Ratings (1-5, stored in outputs/ratings.json) and blind rating mode ----
+const LABELS = ["", "1 chaotic", "2 weak / partly good", "3 okay", "4 good", "5 excellent"];
+const rateState = { ratings: {}, pool: [], order: [], blind: false };
+
+async function loadRatings() {
+  try {
+    rateState.ratings = await (await fetch("/api/ratings")).json();
+    rateState.pool = await (await fetch("/api/pool")).json();
+  } catch { return; }
+  if (rateState.pool.length && !rateState.order.length) {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem("om-blind-order")); } catch {}
+    rateState.order = saved && saved.length === rateState.pool.length ? saved
+      : [...rateState.pool].sort(() => Math.random() - 0.5);
+    try { localStorage.setItem("om-blind-order", JSON.stringify(rateState.order)); } catch {}
+  }
+  const done = rateState.pool.filter(u => rateState.ratings[u]).length;
+  const btn = $("blind-btn");
+  btn.hidden = !rateState.pool.length;
+  btn.textContent = `Blind rating · ${done} / ${rateState.pool.length} rated`;
+  $("blind-progress").textContent = `${done} / ${rateState.pool.length}`;
+  renderRating();
+}
+
+function renderRating() {
+  const current = state.url && rateState.ratings[state.url];
+  $("rate").replaceChildren(...[1, 2, 3, 4, 5].map(r => {
+    const b = document.createElement("button");
+    b.textContent = LABELS[r];
+    b.classList.toggle("on", Boolean(current && current.rating === r));
+    b.onclick = () => rate(r);
+    return b;
+  }));
+  if (document.activeElement !== $("rate-comment")) $("rate-comment").value = current ? current.comment : "";
+}
+
+async function rate(r) {
+  if (!state.url) return;
+  const url = state.url;
+  const res = await fetch("/api/rate", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, rating: r, comment: $("rate-comment").value }) });
+  if (!res.ok) { alert("Could not save the rating"); return; }
+  rateState.ratings[url] = { rating: r, comment: $("rate-comment").value };
+  await loadRatings();
+  loadList();
+  if (rateState.blind) nextBlind();
+}
+
+function nextBlind() {
+  const next = rateState.order.find(u => !rateState.ratings[u] && u !== state.url);
+  if (!next) { alert("Everything in the pool is rated. Thank you!"); exitBlind(); return; }
+  select(next).then(() => audio.play().catch(() => {}));
+}
+
+function enterBlind() {
+  rateState.blind = true;
+  document.body.classList.add("blind");
+  nextBlind();
+}
+
+function exitBlind() {
+  rateState.blind = false;
+  document.body.classList.remove("blind");
+  if (state.take) $("title").textContent = state.take.meta.title || state.take.name;
+}
+
+$("blind-btn").onclick = enterBlind;
+$("blind-exit").onclick = exitBlind;
+$("blind-skip").onclick = () => {
+  const i = rateState.order.indexOf(state.url);
+  if (i >= 0) rateState.order.push(...rateState.order.splice(i, 1));  // skipped takes go to the back
+  nextBlind();
+};
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || !state.take) return;
+  if (e.key >= "1" && e.key <= "5") rate(+e.key);
+  else if (rateState.blind && (e.key === "n" || e.key === "N")) $("blind-skip").onclick();
+});
+
 fetch("/api/site").then(r => r.json()).then(site => {
   if (!site.title) return;
   $("site-title").textContent = `OrchestraMaker · ${site.title}`;
   document.title = `OrchestraMaker ${site.title}`;
 }).catch(() => {});
-loadList();
+loadRatings().then(loadList);
 loadRuns();
 setInterval(() => { loadList(); loadRuns(); }, 10000);
 if (location.hash.startsWith("#run=")) selectRun(decodeURIComponent(location.hash.slice(5)));

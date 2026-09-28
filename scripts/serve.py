@@ -9,7 +9,9 @@ A separate site for one model, e.g. v1.5 on another port:
 """
 
 import argparse
+import hashlib
 import json
+import time
 from fnmatch import fnmatch
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS = ROOT / "outputs"
-SITE = {"title": "", "takes": [], "runs": []}  # filters set from the command line
+SITE = {"title": "", "takes": [], "runs": [], "pool": None}  # set from the command line
+RATINGS = OUTPUTS / "ratings.json"  # take url -> {"rating": 1-5, "comment", "time", "sha1" of the take file}
 
 
 def list_takes():
@@ -81,25 +84,63 @@ def list_runs():
     return sorted(runs, key=lambda r: -r["updated"])
 
 
+def read_ratings() -> dict:
+    return json.loads(RATINGS.read_text()) if RATINGS.exists() else {}
+
+
+def rating_pool() -> list[str]:
+    """Take urls for blind rating (scripts/build_rating_pool.py), if this site has a pool."""
+    return json.loads(Path(SITE["pool"]).read_text())["takes"] if SITE["pool"] else []
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self.send_response(302)
             self.send_header("Location", "/webui/")
             self.end_headers()
-        elif self.path.split("?")[0] in ("/api/takes", "/api/runs", "/api/site"):
+        elif self.path.split("?")[0] in ("/api/takes", "/api/runs", "/api/site", "/api/ratings", "/api/pool"):
             route = self.path.split("?")[0]
-            data = list_takes() if route == "/api/takes" else list_runs() if route == "/api/runs" else SITE
-            body = json.dumps(data).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            data = {"/api/takes": list_takes, "/api/runs": list_runs, "/api/site": lambda: SITE,
+                    "/api/ratings": read_ratings, "/api/pool": rating_pool}[route]()
+            self.send_json(data)
         elif self.path.startswith(("/webui/", "/outputs/")):
             super().do_GET()
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        """POST /api/rate {"url": take url, "rating": 1-5 or null to clear, "comment": optional text}"""
+        if self.path != "/api/rate":
+            return self.send_error(404)
+        try:
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            url, rating = req["url"], req.get("rating")
+            if not url.startswith("/outputs/") or rating not in (None, 1, 2, 3, 4, 5):
+                raise ValueError
+        except (ValueError, KeyError, json.JSONDecodeError):
+            return self.send_error(400)
+        ratings = read_ratings()
+        if rating is None:
+            ratings.pop(url, None)
+        else:
+            take = (ROOT / url.lstrip("/")).resolve()
+            if not take.is_relative_to(OUTPUTS.resolve()) or not take.is_file():
+                return self.send_error(404)
+            ratings[url] = {"rating": rating, "comment": str(req.get("comment", ""))[:500], "time": time.time(),
+                            "sha1": hashlib.sha1(take.read_bytes()).hexdigest()}  # detects a re-rendered take
+        tmp = RATINGS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(ratings, indent=1))
+        tmp.replace(RATINGS)  # atomic: a crash never leaves half a ratings file
+        self.send_json({"ok": True, "rated": len(ratings)})
+
+    def send_json(self, data):
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")  # takes get re-rendered under the same name
@@ -115,8 +156,9 @@ def main():
     ap.add_argument("--title", default="", help="shown next to OrchestraMaker, e.g. v1.5")
     ap.add_argument("--takes", nargs="*", default=[], help="only take groups matching these patterns")
     ap.add_argument("--runs", nargs="*", default=[], help="only these training runs")
+    ap.add_argument("--pool", help="rating pool manifest (scripts/build_rating_pool.py) for blind rating")
     args = ap.parse_args()
-    SITE.update(title=args.title, takes=args.takes, runs=args.runs)
+    SITE.update(title=args.title, takes=args.takes, runs=args.runs, pool=args.pool)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler, directory=str(ROOT)))
     print(f"OrchestraMaker UI{' (' + args.title + ')' if args.title else ''}: http://127.0.0.1:{args.port}")
     server.serve_forever()
